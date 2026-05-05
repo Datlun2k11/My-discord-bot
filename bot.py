@@ -1,90 +1,72 @@
-import os
-import asyncio
-import aiohttp
+import os, asyncio, aiohttp, discord
 from flask import Flask
 from threading import Thread
-import discord
 from discord.ext import commands
 from groq import Groq
 
-# --- CẤU HÌNH WEB MỒI (FLASK) ---
+# --- CẤU HÌNH WEB MỒI ---
 app = Flask('')
 @app.route('/')
-def home(): return "Bot Backrooms đang thở nhé bradar (¬‿¬)"
+def home(): return "Bot Backrooms vẫn đang 'thở' trên Render nhé bradar (¬‿¬)"
 
-def run_flask():
-    app.run(host='0.0.0.0', port=8080)
+def run_flask(): app.run(host='0.0.0.0', port=8080)
 
 # --- CẤU HÌNH BOT ---
-# Lấy API từ Environment Variables cho nó pro[span_0](start_span)[span_0](end_span)
 TOKEN = os.getenv('DISCORD_TOKEN')
-GROQ_KEY = os.getenv('GROQ_API_KEY')
+client_groq = Groq(api_key=os.getenv('GROQ_API_KEY'))
+bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
 
-client_groq = Groq(api_key=GROQ_KEY)
-intents = discord.Intents.all()
-bot = commands.Bot(command_prefix="!", intents=intents)
-
-# --- HÀM LẤY DATA (BUG FIX: THÊM TRY-EXCEPT) ---
-async def get_fandom_text(session, title):
-    url = "https://backrooms.fandom.com/api.php"
-    params = {
-        "action": "query", "prop": "extracts", "titles": title,
-        "explaintext": 1, "format": "json"
+# --- HÀM SEARCH & GET DATA PRO ---
+async def get_backrooms_data(session, query):
+    api_url = "https://backrooms.fandom.com/api.php"
+    
+    # Bước 1: Search cái title chuẩn nhất (để tránh lỗi gõ '0' k ra 'Level 0')
+    search_params = {
+        "action": "query", "list": "search", "srsearch": query, "format": "json"
     }
-    try:
-        async with session.get(url, params=params, timeout=10) as r:
-            data = await r.json()
-            pages = data.get("query", {}).get("pages", {})
-            for k, v in pages.items():
-                if "extract" in v:
-                    return v["extract"]
-            return None
-    except Exception as e:
-        print(f"Lỗi hút data: {e}")
-        return None
+    async with session.get(api_url, params=search_params) as r:
+        s_data = await r.json()
+        search_results = s_data.get("query", {}).get("search", [])
+        if not search_results: return None
+        best_title = search_results[0]["title"] # Lấy cái tên trang khớp nhất 🎯
 
-# --- LOGIC MENTION & TÓM TẮT ---
+    # Bước 2: Hút nội dung từ cái title vừa tìm đc
+    content_params = {
+        "action": "query", "prop": "extracts", "titles": best_title,
+        "explaintext": 1, "format": "json", "redirects": 1
+    }
+    async with session.get(api_url, params=content_params) as r:
+        c_data = await r.json()
+        pages = c_data.get("query", {}).get("pages", {})
+        for k, v in pages.items():
+            return v.get("extract")
+    return None
+
 @bot.event
-async def on_message(message):
-    if message.author.bot: return
+async def on_message(msg):
+    if msg.author.bot: return
+    if bot.user.mentioned_in(msg) or msg.content.startswith('!tomtat'):
+        q = msg.content.replace(f'<@!{bot.user.id}>', '').replace(f'<@{bot.user.id}>', '').replace('!tomtat', '').strip()
+        if not q: return await msg.reply("Gõ tên level vào cái thằng báo này 💀")
 
-    # Nếu được mention hoặc dùng lệnh !tomtat
-    if bot.user.mentioned_in(message) or message.content.startswith('!tomtat'):
-        # Lấy tên level (bỏ mention hoặc bỏ lệnh)
-        level_name = message.content.replace(f'<@!{bot.user.id}>', '').replace(f'<@{bot.user.id}>', '').replace('!tomtat', '').strip()
-        
-        if not level_name:
-            await message.channel.send("M định tóm tắt cái nịt à? Gõ tên level vào bradar 💀")
-            return
-
-        async with message.channel.typing():
+        async with msg.channel.typing():
             async with aiohttp.ClientSession() as session:
-                content = await get_fandom_text(session, level_name)
-                
-                if not content:
-                    await message.channel.send(f"Đếch tìm thấy cái level {level_name} này trên Fandom, m bịp t à? 💔")
-                    return
+                txt = await get_backrooms_data(session, q)
+                if not txt: return await msg.reply(f"Đếch thấy lore cho '{q}' nx, m bịp t à? 💔")
 
-                try:
-                    # Gọi GPT-OSS-120B qua Groq
-                    chat = client_groq.chat.completions.create(
-                        model="gpt-oss-120b",
-                        messages=[
-                            {"role": "system", "content": "M là bot Backrooms GenZ. Tóm tắt lore sau cực ngắn, nhây, cà khịa, dùng teencode (nx, th, cx, k, j...) và emoji 💀."},
-                            {"role": "user", "content": f"Level: {level_name}\nData: {content[:2500]}"}
-                        ]
-                    )
-                    await message.reply(f"{chat.choices[0].message.content} 🥀")
-                except Exception as e:
-                    await message.channel.send(f"Con AI 120B đang bị ngáo, m đợi tí ☠️ (Lỗi: {e})")
-
-    await bot.process_commands(message)
+                # Đút vào GPT-120B múa quạt
+                res = client_groq.chat.completions.create(
+                    model="gpt-oss-120b",
+                    messages=[
+                        {"role": "system", "content": "M là bot Backrooms GenZ nhây lầy. Tóm tắt lore sau cực ngắn, cà khịa, dùng teencode (nx, th, cx, k, j...) và emoji 💀."},
+                        {"role": "user", "content": f"Data: {txt[:2500]}"}
+                    ]
+                )
+                await msg.reply(f"{res.choices[0].message.content} 🥀")
 
 @bot.event
-async def on_ready():
-    print(f"Bot {bot.user} đã lên sàn! Ready to báo 💀")
+async def on_ready(): print(f"Master {bot.user} online r nhé bradar (¬‿¬)")
 
-# --- KHỞI CHẠY ---
 if __name__ == "__main__":
     Thread(target=run_flask).start()
     bot.run(TOKEN)
