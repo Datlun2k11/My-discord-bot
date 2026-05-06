@@ -17,18 +17,6 @@ GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 DATA_FILE = "user_data.json"
 
-class MyBot(discord.Client):
-    def __init__(self):
-        super().__init__(intents=discord.Intents.all())
-        self.tree = app_commands.CommandTree(self)
-
-    async def setup_hook(self):
-        await self.tree.sync()
-        print(f"✅ Bot {self.user} đã sẵn sàng với slash command!")
-
-bot = MyBot()
-app = Flask(__name__)
-
 # ==================== DATABASE ====================
 def load_db():
     try:
@@ -45,12 +33,27 @@ user_data = load_db()
 cooldowns = {}
 
 # ==================== FLASK KEEP ALIVE ====================
+app = Flask(__name__)
+
 @app.route('/')
 def home():
-    return "🐉 Bot săn quái đang chạy ngon lành!"
+    return "🐉 Bot săn quái turn-based đang chạy!"
 
 def run_flask():
     app.run(host='0.0.0.0', port=8080, debug=False, use_reloader=False)
+
+# ==================== DISCORD BOT ====================
+class MyBot(discord.Client):
+    def __init__(self):
+        super().__init__(intents=discord.Intents.all())
+        self.tree = app_commands.CommandTree(self)
+        self.active_battles = {}  # channel_id -> battle data
+
+    async def setup_hook(self):
+        await self.tree.sync()
+        print(f"✅ Bot {self.user} đã sẵn sàng với hệ thống săn quái turn-based!")
+
+bot = MyBot()
 
 # ==================== HELPER ====================
 def init_user(uid):
@@ -60,362 +63,300 @@ def init_user(uid):
             "gold": 100,
             "weapon": "kiếm gỉ",
             "armor": "áo rách",
-            "hunts": 0,
-            "wins": 0,
-            "losses": 0,
-            "boss_kills": 0,
-            "last_daily": None,
-            "last_weekly": None
+            "level": 1,
+            "exp": 0,
+            "map": "Rừng khởi đầu",
+            "hp_max": 55,
+            "hp_current": 55,
+            "death_time": None,
+            "total_hunts": 0,
+            "total_wins": 0
         }
         save_db()
 
-def check_cooldown(uid, cmd, seconds):
-    key = f"{uid}_{cmd}"
-    if key in cooldowns and datetime.now() < cooldowns[key]:
-        remaining = int((cooldowns[key] - datetime.now()).total_seconds())
-        return remaining
-    cooldowns[key] = datetime.now() + timedelta(seconds=seconds)
-    return 0
+def get_damage(user_id, is_monster=False):
+    """Tính sát thương"""
+    uid = str(user_id)
+    if is_monster:
+        base = 8 + (user_data[uid].get("level", 1) // 2)
+        armor = user_data[uid]["armor"]
+        reduce = {"áo rách": 0, "áo da": 0.25, "áo thép": 0.45}
+        return int(base * (1 - reduce.get(armor, 0)))
+    else:
+        base = 10 + user_data[uid]["level"] * 2
+        weapon = user_data[uid]["weapon"]
+        bonus = {"kiếm gỉ": 0, "kiếm sắt": 0.2, "kiếm thần": 0.5}
+        return int(base * (1 + bonus.get(weapon, 0)))
 
-# ==================== AI CALL ====================
-async def call_groq_ai(outcome, context=""):
-    headers = {
-        "Authorization": f"Bearer {GROQ_KEY}",
-        "Content-Type": "application/json"
+def get_next_letter():
+    return random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+def format_reward_for_players(gold, player_count):
+    """Ép gold chia hết cho số người chơi"""
+    if player_count == 0:
+        return 0
+    gold = random.randint(50, 150)
+    remainder = gold % player_count
+    return gold - remainder
+
+# ==================== TURN-BASED BATTLE ====================
+async def start_battle(interaction, players):
+    """Bắt đầu battle turn-based"""
+    channel_id = interaction.channel_id
+    total_hp_players = sum(p["hp"] for p in players)
+    monster_hp = int(total_hp_players * 0.7)
+    if monster_hp < 20:
+        monster_hp = 20
+    
+    battle_data = {
+        "players": players,
+        "monster_hp": monster_hp,
+        "current_turn": 0,
+        "game_over": False,
+        "reward": 0,
+        "start_time": datetime.now(),
+        "message": None
     }
+    bot.active_battles[channel_id] = battle_data
     
-    prompt = f"""Bạn là game master hài hước, lầy lội, style GenZ. 
-Người chơi vừa {'THẮNG' if outcome == 'win' else 'THUA'} trong săn quái. 
-Hãy kể 1 câu cực kỳ hài hước, bất ngờ, dùng tiếng Việt street style, có thể chửi thề nhẹ.
-Độ dài tối đa 20 từ.
-Bối cảnh: {context}
-Kết quả:"""
+    embed = discord.Embed(title="⚔️ TRẬN CHIẾN BẮT ĐẦU ⚔️", color=discord.Color.blue())
+    embed.add_field(name="🐉 Quái vật", value=f"HP: {monster_hp}", inline=True)
+    player_list = "\n".join([f"👤 {p['user'].mention} | HP: {p['hp']}/{p['hp_max']}" for p in players])
+    embed.add_field(name="🗡️ Đội hình", value=player_list, inline=False)
+    embed.set_footer(text="Mỗi lượt bạn có 3s để gõ đúng chữ cái được yêu cầu!")
     
-    payload = {
-        "model": "llama-3.3-70b-versatile",
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.95,
-        "max_tokens": 60
-    }
+    msg = await interaction.followup.send(embed=embed)
+    battle_data["message"] = msg
+    await process_turn(channel_id)
+
+async def process_turn(channel_id):
+    battle = bot.active_battles.get(channel_id)
+    if not battle or battle["game_over"]:
+        return
     
-    fallback_win = ["Mày đập quái chết tươi! +random xu", "Quái thấy mặt mày xỉu luôn! 🥀", "Mày thắng á? AI sinh ra nói dối à?"]
-    fallback_lose = ["Mày thua! Quái cười vào mặt mày! 🤣", "Mày biến kiếm thành xúc xích rồi! 🌭", "Quái đạp mày 10 cái, mất xu!"]
+    # Loại bỏ người chơi chết
+    alive_players = [p for p in battle["players"] if p["hp"] > 0]
+    if not alive_players or battle["monster_hp"] <= 0:
+        await end_battle(channel_id, win=(battle["monster_hp"] <= 0))
+        return
     
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.post(GROQ_URL, headers=headers, json=payload, timeout=6) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    text = data['choices'][0]['message']['content'].strip()
-                    return text[:150]
-                return random.choice(fallback_win if outcome == "win" else fallback_lose)
-        except:
-            return random.choice(fallback_win if outcome == "win" else fallback_lose)
+    # Đến lượt người tiếp theo
+    current = battle["current_turn"] % len(alive_players)
+    player = alive_players[current]
+    battle["current_turn"] += 1
+    
+    letter = get_next_letter()
+    
+    embed = discord.Embed(title="🎲 ĐẾN LƯỢT BẠN!", color=discord.Color.gold())
+    embed.description = f"{player['user'].mention}\n🔤 Hãy nói chữ: **{letter}**\n⏱️ Bạn có 3 giây!"
+    embed.add_field(name="🐉 HP Quái", value=battle["monster_hp"], inline=True)
+    embed.add_field(name="💚 HP Của bạn", value=f"{player['hp']}/{player['hp_max']}", inline=True)
+    
+    await battle["message"].edit(embed=embed)
+    
+    def check(m):
+        return m.author.id == player["user"].id and m.content.strip().upper() == letter and m.channel.id == channel_id
+    
+    try:
+        await bot.wait_for('message', timeout=3.0, check=check)
+        # Người chơi đánh đúng
+        dmg = get_damage(player["user"].id)
+        battle["monster_hp"] = max(0, battle["monster_hp"] - dmg)
+        await battle["message"].channel.send(f"✅ {player['user'].mention} đánh trúng! Gây {dmg} sát thương!")
+    except asyncio.TimeoutError:
+        # Quái đánh người chơi
+        dmg = get_damage(player["user"].id, is_monster=True)
+        player["hp"] = max(0, player["hp"] - dmg)
+        await battle["message"].channel.send(f"❌ {player['user'].mention} không kịp! Quái đánh {dmg} sát thương!")
+        
+        if player["hp"] == 0:
+            uid = str(player["user"].id)
+            user_data[uid]["death_time"] = datetime.now().isoformat()
+            save_db()
+            await battle["message"].channel.send(f"💀 {player['user'].mention} đã ngã xuống! Chờ 20s mới hồi sinh.")
+    
+    # Cập nhật embed hiện trạng
+    await update_battle_status(channel_id)
+    
+    # Chờ 1s rồi xử lý lượt tiếp theo
+    await asyncio.sleep(1)
+    await process_turn(channel_id)
+
+async def update_battle_status(channel_id):
+    battle = bot.active_battles.get(channel_id)
+    if not battle:
+        return
+    
+    embed = discord.Embed(title="⚔️ TRẬN CHIẾN ĐANG DIỄN RA ⚔️", color=discord.Color.orange())
+    embed.add_field(name="🐉 HP Quái", value=battle["monster_hp"], inline=True)
+    player_list = "\n".join([f"👤 {p['user'].mention} | HP: {p['hp']}/{p['hp_max']}" for p in battle["players"]])
+    embed.add_field(name="🗡️ Đội hình", value=player_list, inline=False)
+    await battle["message"].edit(embed=embed)
+
+async def end_battle(channel_id, win):
+    battle = bot.active_battles.pop(channel_id, None)
+    if not battle:
+        return
+    
+    if win:
+        reward_total = format_reward_for_players(0, len([p for p in battle["players"] if p["hp"] > 0]))
+        reward_each = reward_total // len([p for p in battle["players"] if p["hp"] > 0])
+        
+        embed = discord.Embed(title="🏆 CHIẾN THẮNG! 🏆", color=discord.Color.green())
+        result_msg = f"🎉 Cả đội thắng! Nhận {reward_total} xu.\n"
+        for p in battle["players"]:
+            if p["hp"] > 0:
+                uid = str(p["user"].id)
+                user_data[uid]["gold"] += reward_each
+                user_data[uid]["total_wins"] += 1
+                user_data[uid]["exp"] += 20
+                user_data[uid]["total_hunts"] += 1
+                # Level up
+                exp_needed = 100 * user_data[uid]["level"]
+                while user_data[uid]["exp"] >= exp_needed:
+                    user_data[uid]["level"] += 1
+                    user_data[uid]["exp"] -= exp_needed
+                    user_data[uid]["hp_max"] = 50 + user_data[uid]["level"] * 5
+                    exp_needed = 100 * user_data[uid]["level"]
+                if user_data[uid]["hp_current"] > user_data[uid]["hp_max"]:
+                    user_data[uid]["hp_current"] = user_data[uid]["hp_max"]
+                result_msg += f"- {p['user'].mention}: +{reward_each} xu, +20 exp (Level {user_data[uid]['level']})\n"
+            else:
+                result_msg += f"- {p['user'].mention}: chết nên không nhận thưởng\n"
+        save_db()
+        embed.description = result_msg
+        await battle["message"].channel.send(embed=embed)
+    else:
+        embed = discord.Embed(title="💀 THẤT BẠI 💀", color=discord.Color.red())
+        embed.description = "Cả đội đã chết! Hãy hồi phục và thử lại."
+        await battle["message"].channel.send(embed=embed)
 
 # ==================== SLASH COMMANDS ====================
-@bot.tree.command(name='go_hunt', description="🐉 Săn quái – kiếm xu, hên xui")
-async def go_hunt(interaction: discord.Interaction):
-    uid = str(interaction.user.id)
-    init_user(uid)
-    
-    cd = check_cooldown(uid, "hunt", 10)
-    if cd > 0:
-        return await interaction.response.send_message(f"⌛ Chậm thôi bro, còn {cd}s nữa quái mới mọc!", ephemeral=True)
-    
+@bot.tree.command(name='go_hunt', description="🐉 Săn quái theo lượt, có thể rủ thêm bạn (tối đa 4 người)")
+@app_commands.describe(nguoi1="Tag người chơi thứ 2", nguoi2="Tag người chơi thứ 3", nguoi3="Tag người chơi thứ 4")
+async def go_hunt(interaction: discord.Interaction, nguoi1: discord.User = None, nguoi2: discord.User = None, nguoi3: discord.User = None):
     await interaction.response.defer()
     
-    # Tính tỉ lệ thắng dựa trên vũ khí
-    win_rate = 0.5
-    if user_data[uid]['weapon'] == "kiếm sắt":
-        win_rate = 0.65
-    elif user_data[uid]['weapon'] == "kiếm thần":
-        win_rate = 0.8
+    # Kiểm tra battle đang diễn ra
+    if interaction.channel_id in bot.active_battles:
+        return await interaction.followup.send("⚠️ Đã có trận chiến trong kênh này! Kết thúc rồi hãy săn tiếp.", ephemeral=True)
     
-    is_win = random.random() < win_rate
+    # Tập hợp người chơi (chính chủ + tag)
+    players = [interaction.user]
+    if nguoi1:
+        players.append(nguoi1)
+    if nguoi2:
+        players.append(nguoi2)
+    if nguoi3:
+        players.append(nguoi3)
     
-    # Random sự kiện đặc biệt (5%)
-    special = random.random() < 0.05
+    # Loại bỏ trùng
+    players = list(dict.fromkeys(players))
     
-    story = await call_groq_ai("win" if is_win else "lose", f"vũ khí: {user_data[uid]['weapon']}, giáp: {user_data[uid]['armor']}")
+    # Kiểm tra cooldown & death
+    invalid = []
+    for p in players:
+        uid = str(p.id)
+        init_user(uid)
+        
+        # Cooldown 10s
+        cd_key = f"{uid}_hunt"
+        if cd_key in cooldowns and datetime.now() < cooldowns[cd_key]:
+            invalid.append(f"{p.mention} (còn {(cooldowns[cd_key]-datetime.now()).seconds}s)")
+        
+        # Death cooldown
+        death_time = user_data[uid].get("death_time")
+        if death_time:
+            dt = datetime.fromisoformat(death_time)
+            if datetime.now() - dt < timedelta(seconds=20):
+                invalid.append(f"{p.mention} (đang chết, còn {20 - (datetime.now()-dt).seconds}s)")
     
-    if special:
-        story += "\n\n🎲 **SỰ KIỆN ĐẶC BIỆT!**"
+    if invalid:
+        return await interaction.followup.send(f"❌ Không thể tham gia:\n" + "\n".join(invalid), ephemeral=True)
     
-    if is_win:
-        reward = random.randint(20, 70)
-        if special:
-            reward *= 2
-            story += f"\n✨ NHẬN X2! ✨"
-        user_data[uid]['gold'] += reward
-        user_data[uid]['wins'] += 1
-        color = discord.Color.green()
-        result_text = f"✨ +{reward} xu"
-    else:
-        penalty = random.randint(10, 35)
-        if user_data[uid]['armor'] == "áo da":
-            penalty = penalty // 2
-        if special:
-            penalty = penalty // 2
-            story += f"\n🛡️ Giáp giảm sát thương!"
-        user_data[uid]['gold'] = max(0, user_data[uid]['gold'] - penalty)
-        user_data[uid]['losses'] += 1
-        color = discord.Color.red()
-        result_text = f"💸 -{penalty} xu"
+    # Gửi lời mời
+    mention_str = " ".join([p.mention for p in players])
+    msg = await interaction.followup.send(f"🔥 {mention_str} có muốn tham gia trận chiến không? Gõ **ok** trong 30s!")
     
-    user_data[uid]['hunts'] += 1
-    save_db()
+    confirmed = set()
+    confirmed.add(interaction.user.id)  # chủ phòng tự động ok
     
-    embed = discord.Embed(
-        title="🏹 KẾT QUẢ SĂN QUÁI 🏹",
-        description=f"```{story}```",
-        color=color
-    )
-    embed.add_field(name="💰 Kết quả", value=result_text, inline=True)
-    embed.add_field(name="📦 Ví hiện tại", value=f"{user_data[uid]['gold']} xu", inline=True)
-    embed.add_field(name="⚔️ Trang bị", value=f"{user_data[uid]['weapon']} | {user_data[uid]['armor']}", inline=False)
-    embed.set_footer(text=f"Tổng số lần săn: {user_data[uid]['hunts']} (Thắng: {user_data[uid]['wins']} | Thua: {user_data[uid]['losses']})")
+    def check_join(m):
+        return m.author.id in [p.id for p in players] and m.content.strip().lower() == "ok" and m.channel.id == interaction.channel_id
     
-    await interaction.followup.send(embed=embed)
+    try:
+        start_time = datetime.now()
+        while len(confirmed) < len(players) and (datetime.now() - start_time).seconds < 30:
+            done, _ = await asyncio.wait_for(asyncio.gather(asyncio.create_task(bot.wait_for('message', timeout=30-len(confirmed)*3, check=check_join))), timeout=30)
+            if done:
+                confirmed.add(done[0].author.id)
+        final_players = [p for p in players if p.id in confirmed]
+    except:
+        final_players = [p for p in players if p.id in confirmed]
+    
+    if len(final_players) == 0:
+        return await interaction.followup.send("❌ Không ai tham gia, hủy săn...")
+    
+    # Chuẩn bị data battle
+    battle_players = []
+    for p in final_players:
+        uid = str(p.id)
+        battle_players.append({
+            "user": p,
+            "hp": user_data[uid]["hp_max"],
+            "hp_max": user_data[uid]["hp_max"],
+            "uid": uid
+        })
+        # Set cooldown
+        cooldowns[f"{uid}_hunt"] = datetime.now() + timedelta(seconds=10)
+    
+    await start_battle(interaction, battle_players)
 
-@bot.tree.command(name='inv', description="📦 Xem túi đồ và số xu")
+@bot.tree.command(name='tutorial', description="📖 Hướng dẫn chơi game săn quái turn-based")
+async def tutorial(interaction: discord.Interaction):
+    desc = """**🎮 HƯỚNG DẪN CHƠI**
+    
+    **1. Bắt đầu**: `/go_hunt [tên_tag]` rủ thêm bạn (tối đa 4 người)
+    **2. Tham gia**: Gõ `ok` trong 30s khi được tag
+    **3. Cách chơi**: Mỗi lượt bot yêu cầu gõ đúng **chữ cái** (A-Z) trong **3 giây**
+       - ✅ Gõ đúng: gây sát thương lên quái
+       - ❌ Gõ sai/chậm: quái đánh trúng bạn
+    **4. HP quái** luôn thấp hơn tổng HP cả đội
+    **5. Chia thưởng**: Xu được chia đều cho người còn sống
+    **6. Chết**: hồi sau 20 giây
+    **7. Level**: lên level tăng HP tối đa và sát thương
+    
+    **🛒 Shop**: `/shop` mua vũ khí, giáp, bình máu (thêm sau)
+    **📊 Stats**: `/inv` xem trang bị, `/level` xem cấp độ
+    """
+    await interaction.response.send_message(embed=discord.Embed(title="📘 HƯỚNG DẪN", description=desc, color=discord.Color.green()))
+
+@bot.tree.command(name='inv', description="📦 Xem túi đồ và trạng thái")
 async def inventory(interaction: discord.Interaction):
     uid = str(interaction.user.id)
     init_user(uid)
-    data = user_data[uid]
-    
-    embed = discord.Embed(title=f"📦 TÚI ĐỒ CỦA {interaction.user.display_name}", color=discord.Color.gold())
-    embed.add_field(name="💰 Xu", value=f"`{data['gold']}`", inline=True)
-    embed.add_field(name="⚔️ Vũ khí", value=f"`{data['weapon']}`", inline=True)
-    embed.add_field(name="🛡️ Giáp", value=f"`{data['armor']}`", inline=True)
-    embed.add_field(name="🏆 Boss đã giết", value=f"`{data['boss_kills']}`", inline=True)
-    embed.add_field(name="📊 Tỉ lệ thắng", value=f"`{(data['wins']/data['hunts']*100) if data['hunts'] > 0 else 0:.1f}%`", inline=True)
+    d = user_data[uid]
+    embed = discord.Embed(title=f"📦 TÚI ĐỒ {interaction.user.display_name}", color=discord.Color.gold())
+    embed.add_field(name="💰 Xu", value=d["gold"], inline=True)
+    embed.add_field(name="⚔️ Vũ khí", value=d["weapon"], inline=True)
+    embed.add_field(name="🛡️ Giáp", value=d["armor"], inline=True)
+    embed.add_field(name="❤️ Máu", value=f"{d['hp_current']}/{d['hp_max']}", inline=True)
+    embed.add_field(name="📊 Level", value=d["level"], inline=True)
+    embed.add_field(name="✨ Exp", value=f"{d['exp']}/100", inline=True)
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name='shop', description="🛒 Xem cửa hàng trang bị")
-async def shop(interaction: discord.Interaction):
+@bot.tree.command(name='level', description="📊 Xem thông tin cấp độ")
+async def level(interaction: discord.Interaction):
     uid = str(interaction.user.id)
     init_user(uid)
-    
-    embed = discord.Embed(title="🛒 CỬA HÀNG QUÁI THỦ", description="Dùng `/buy [món]` để mua", color=discord.Color.blue())
-    embed.add_field(name="⚔️ Kiếm sắt", value="Giá: `100 xu`\n+15% tỉ lệ thắng", inline=False)
-    embed.add_field(name="🛡️ Áo da", value="Giá: `80 xu`\nGiảm 50% tiền phạt khi thua", inline=False)
-    embed.add_field(name="⚔️ Kiếm thần", value="Giá: `300 xu`\n+30% tỉ lệ thắng (cực phẩm)", inline=False)
-    embed.set_footer(text=f"💰 Xu của bạn: {user_data[uid]['gold']}")
-    
+    d = user_data[uid]
+    embed = discord.Embed(title=f"📈 CẤP ĐỘ {interaction.user.display_name}", color=discord.Color.purple())
+    embed.add_field(name="🎯 Level", value=d["level"], inline=True)
+    embed.add_field(name="✨ Exp", value=f"{d['exp']}/100", inline=True)
+    embed.add_field(name="❤️ HP", value=f"{d['hp_max']}", inline=True)
+    embed.add_field(name="🗺️ Map hiện tại", value=d.get("map", "Rừng khởi đầu"), inline=True)
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name='buy', description="💸 Mua trang bị từ shop")
-@app_commands.describe(item="Tên món đồ: kiếm sắt, áo da, kiếm thần")
-async def buy(interaction: discord.Interaction, item: str):
-    uid = str(interaction.user.id)
-    init_user(uid)
-    
-    items = {
-        "kiếm sắt": {"price": 100, "type": "weapon", "value": "kiếm sắt"},
-        "kiếm thần": {"price": 300, "type": "weapon", "value": "kiếm thần"},
-        "áo da": {"price": 80, "type": "armor", "value": "áo da"}
-    }
-    
-    item_lower = item.lower()
-    if item_lower not in items:
-        return await interaction.response.send_message("❌ Không có món này! Dùng `/shop` để xem danh sách.", ephemeral=True)
-    
-    item_info = items[item_lower]
-    if user_data[uid]['gold'] >= item_info['price']:
-        user_data[uid]['gold'] -= item_info['price']
-        if item_info['type'] == "weapon":
-            user_data[uid]['weapon'] = item_info['value']
-        else:
-            user_data[uid]['armor'] = item_info['value']
-        save_db()
-        
-        embed = discord.Embed(title="✅ MUA THÀNH CÔNG!", description=f"Bạn đã mua **{item_info['value']}**", color=discord.Color.green())
-        embed.add_field(name="💰 Xu còn lại", value=f"{user_data[uid]['gold']}", inline=True)
-        await interaction.response.send_message(embed=embed)
-    else:
-        await interaction.response.send_message(f"💸 Bạn nghèo quá! Cần {item_info['price']} xu nhưng bạn chỉ có {user_data[uid]['gold']} xu.", ephemeral=True)
-
-@bot.tree.command(name='daily', description="🎁 Nhận 50 xu mỗi ngày")
-async def daily(interaction: discord.Interaction):
-    uid = str(interaction.user.id)
-    init_user(uid)
-    
-    today = datetime.now().date()
-    last = user_data[uid].get('last_daily')
-    
-    if last and datetime.strptime(last, "%Y-%m-%d").date() == today:
-        return await interaction.response.send_message("⏰ Hôm nay bạn đã nhận rồi! Quay lại mai nha!", ephemeral=True)
-    
-    reward = 50
-    user_data[uid]['gold'] += reward
-    user_data[uid]['last_daily'] = str(today)
-    save_db()
-    
-    await interaction.response.send_message(f"🎁 {interaction.user.mention} nhận **{reward} xu**! Hiện có {user_data[uid]['gold']} xu.")
-
-@bot.tree.command(name='weekly', description="📆 Nhận 200 xu mỗi tuần")
-async def weekly(interaction: discord.Interaction):
-    uid = str(interaction.user.id)
-    init_user(uid)
-    
-    today = datetime.now().date()
-    last = user_data[uid].get('last_weekly')
-    
-    if last:
-        last_date = datetime.strptime(last, "%Y-%m-%d").date()
-        if (today - last_date).days < 7:
-            remaining = 7 - (today - last_date).days
-            return await interaction.response.send_message(f"⏰ Còn {remaining} ngày nữa mới nhận được tuần tiếp theo!", ephemeral=True)
-    
-    reward = 200
-    user_data[uid]['gold'] += reward
-    user_data[uid]['last_weekly'] = str(today)
-    save_db()
-    
-    await interaction.response.send_message(f"📆 {interaction.user.mention} nhận **{reward} xu** tuần này! Giờ có {user_data[uid]['gold']} xu.")
-
-@bot.tree.command(name='top', description="🏆 Bảng xếp hạng đại gia")
-async def top(interaction: discord.Interaction):
-    sorted_users = sorted(user_data.items(), key=lambda x: x[1]['gold'], reverse=True)[:10]
-    
-    if not sorted_users:
-        return await interaction.response.send_message("Chưa có ai chơi cả!")
-    
-    description = ""
-    for i, (uid, data) in enumerate(sorted_users, 1):
-        user = await bot.fetch_user(int(uid))
-        name = user.display_name if user else f"Người lạ {uid[:6]}"
-        medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "💰"
-        description += f"{medal} **#{i}** {name}: `{data['gold']}` xu (⚔️: {data['hunts']})\n"
-    
-    embed = discord.Embed(title="🏆 BẢNG XẾP HẠNG ĐẠI GIA 🏆", description=description, color=discord.Color.gold())
-    await interaction.response.send_message(embed=embed)
-
-@bot.tree.command(name='gift', description="🎁 Tặng xu cho bạn bè")
-@app_commands.describe(nguoi_nhan="Tag người nhận", so_luong="Số xu muốn tặng")
-async def gift(interaction: discord.Interaction, nguoi_nhan: discord.User, so_luong: int):
-    if so_luong <= 0:
-        return await interaction.response.send_message("Số xu phải lớn hơn 0!", ephemeral=True)
-    
-    uid_giver = str(interaction.user.id)
-    uid_receiver = str(nguoi_nhan.id)
-    
-    if uid_giver == uid_receiver:
-        return await interaction.response.send_message("Không thể tự tặng chính mình!", ephemeral=True)
-    
-    init_user(uid_giver)
-    init_user(uid_receiver)
-    
-    if user_data[uid_giver]['gold'] < so_luong:
-        return await interaction.response.send_message(f"Bạn chỉ có {user_data[uid_giver]['gold']} xu, không đủ để tặng {so_luong} xu!", ephemeral=True)
-    
-    user_data[uid_giver]['gold'] -= so_luong
-    user_data[uid_receiver]['gold'] += so_luong
-    save_db()
-    
-    embed = discord.Embed(title="🎁 QUÀ TẶNG", description=f"{interaction.user.mention} đã tặng **{so_luong} xu** cho {nguoi_nhan.mention}!", color=discord.Color.magenta())
-    embed.add_field(name="💰 Người tặng còn", value=f"{user_data[uid_giver]['gold']} xu", inline=True)
-    embed.add_field(name="💰 Người nhận có", value=f"{user_data[uid_receiver]['gold']} xu", inline=True)
-    await interaction.response.send_message(embed=embed)
-
-@bot.tree.command(name='rob', description="😈 Liều ăn nhiều – cướp xu người khác (rủi ro cao)")
-@app_commands.describe(nguoi_cuop="Người muốn cướp")
-async def rob(interaction: discord.Interaction, nguoi_cuop: discord.User):
-    uid_robber = str(interaction.user.id)
-    uid_target = str(nguoi_cuop.id)
-    
-    if uid_robber == uid_target:
-        return await interaction.response.send_message("Muốn cướp chính mình à? Bị điên à?", ephemeral=True)
-    
-    init_user(uid_robber)
-    init_user(uid_target)
-    
-    cd = check_cooldown(uid_robber, "rob", 300)  # 5 phút
-    if cd > 0:
-        return await interaction.response.send_message(f"⌛ Đợi {cd}s nữa mới đi cướp được! Cảnh sát đang rình.", ephemeral=True)
-    
-    success = random.random() < 0.4  # 40% thành công
-    
-    if success:
-        stolen = random.randint(10, 50)
-        stolen = min(stolen, user_data[uid_target]['gold'])
-        if stolen == 0:
-            return await interaction.response.send_message(f"🤡 {nguoi_cuop.mention} nghèo rớt mồng tơi, chả có gì để cướp!")
-        user_data[uid_robber]['gold'] += stolen
-        user_data[uid_target]['gold'] -= stolen
-        save_db()
-        await interaction.response.send_message(f"😈 {interaction.user.mention} cướp thành công **{stolen} xu** từ {nguoi_cuop.mention}! Liều thì ăn nhiều!")
-    else:
-        penalty = random.randint(20, 60)
-        user_data[uid_robber]['gold'] = max(0, user_data[uid_robber]['gold'] - penalty)
-        save_db()
-        await interaction.response.send_message(f"🚔 {interaction.user.mention} bị bắt quả tang! Mất **{penalty} xu** tiền hối lộ công an. Khôn nên người đi!")
-    
-    save_db()
-
-@bot.tree.command(name='hunt_stats', description="📊 Xem thống kê săn bắn của bạn")
-async def hunt_stats(interaction: discord.Interaction):
-    uid = str(interaction.user.id)
-    init_user(uid)
-    data = user_data[uid]
-    
-    win_rate = (data['wins'] / data['hunts'] * 100) if data['hunts'] > 0 else 0
-    
-    embed = discord.Embed(title=f"📊 THỐNG KÊ SĂN BẮN – {interaction.user.display_name}", color=discord.Color.teal())
-    embed.add_field(name="🎯 Tổng số lần săn", value=data['hunts'], inline=True)
-    embed.add_field(name="🏆 Số lần thắng", value=data['wins'], inline=True)
-    embed.add_field(name="💀 Số lần thua", value=data['losses'], inline=True)
-    embed.add_field(name="📈 Tỉ lệ thắng", value=f"{win_rate:.1f}%", inline=True)
-    embed.add_field(name="💀 Boss đã giết", value=data['boss_kills'], inline=True)
-    embed.set_footer(text="Hãy mua đồ ở shop để tăng tỉ lệ thắng!")
-    
-    await interaction.response.send_message(embed=embed)
-
-@bot.tree.command(name='boss', description="👾 Săn boss đặc biệt – phần thưởng lớn!")
-async def boss(interaction: discord.Interaction):
-    uid = str(interaction.user.id)
-    init_user(uid)
-    
-    cd = check_cooldown(uid, "boss", 3600)  # 1 tiếng
-    if cd > 0:
-        return await interaction.response.send_message(f"⌛ Boss mọc lại sau {cd//60} phút {cd%60} giây! Luyện tập thêm đi.", ephemeral=True)
-    
-    await interaction.response.defer()
-    
-    win_rate = 0.3
-    if user_data[uid]['weapon'] == "kiếm sắt":
-        win_rate = 0.45
-    elif user_data[uid]['weapon'] == "kiếm thần":
-        win_rate = 0.6
-    
-    is_win = random.random() < win_rate
-    
-    if is_win:
-        reward = random.randint(150, 300)
-        user_data[uid]['gold'] += reward
-        user_data[uid]['boss_kills'] += 1
-        user_data[uid]['wins'] += 1
-        color = discord.Color.purple()
-        result = f"🎉 BOSS CHẾT! Nhận {reward} xu! 🎉"
-    else:
-        penalty = random.randint(50, 100)
-        if user_data[uid]['armor'] == "áo da":
-            penalty = int(penalty * 0.6)
-        user_data[uid]['gold'] = max(0, user_data[uid]['gold'] - penalty)
-        user_data[uid]['losses'] += 1
-        color = discord.Color.dark_red()
-        result = f"💀 BOSS ĐÁNH MÀY BAY MÀU! Mất {penalty} xu 💀"
-    
-    user_data[uid]['hunts'] += 1
-    save_db()
-    
-    embed = discord.Embed(title="👾 SĂN BOSS TỐI THƯỢNG 👾", description=result, color=color)
-    embed.add_field(name="💰 Xu hiện tại", value=f"{user_data[uid]['gold']}", inline=True)
-    embed.add_field(name="⚔️ Trang bị", value=f"{user_data[uid]['weapon']} + {user_data[uid]['armor']}", inline=True)
-    embed.set_footer(text="Boss mọc lại sau 1 tiếng! Dùng /boss để quẩy tiếp")
-    
-    await interaction.followup.send(embed=embed)
-
-# ==================== RUN ====================
+# Chạy flask & bot
 threading.Thread(target=run_flask, daemon=True).start()
 bot.run(TOKEN)
