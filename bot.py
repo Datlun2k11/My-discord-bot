@@ -8,7 +8,7 @@ import os
 import threading
 import requests
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
+from dotenv import load_dotenv, set_key
 from flask import Flask
 
 load_dotenv()
@@ -19,6 +19,10 @@ GIST_ID = os.getenv('GIST_ID')
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 DATA_FILE = "user_data.json"
+ENV_FILE = ".env"
+
+# Owner ID
+OWNER_ID = 1155129530122510376
 
 # ==================== DATABASE ====================
 def load_db():
@@ -66,7 +70,7 @@ ENEMY_TYPES = {
         "level_req": 0,
         "time_limit": 8.0,
         "reward_range": (10, 20),
-        "hp_multiplier": 0.5,
+        "hp_multiplier": 1.2,
         "damage_range": (5, 10),
         "exp_reward": 10
     },
@@ -75,7 +79,7 @@ ENEMY_TYPES = {
         "level_req": 2,
         "time_limit": 7.5,
         "reward_range": (20, 30),
-        "hp_multiplier": 0.6,
+        "hp_multiplier": 1.4,
         "damage_range": (8, 14),
         "exp_reward": 15
     },
@@ -84,7 +88,7 @@ ENEMY_TYPES = {
         "level_req": 4,
         "time_limit": 6.0,
         "reward_range": (40, 50),
-        "hp_multiplier": 0.7,
+        "hp_multiplier": 1.6,
         "damage_range": (10, 18),
         "exp_reward": 20
     },
@@ -93,7 +97,7 @@ ENEMY_TYPES = {
         "level_req": 6,
         "time_limit": 5.5,
         "reward_range": (50, 70),
-        "hp_multiplier": 0.8,
+        "hp_multiplier": 1.8,
         "damage_range": (12, 22),
         "exp_reward": 25
     },
@@ -102,7 +106,7 @@ ENEMY_TYPES = {
         "level_req": 8,
         "time_limit": 5.0,
         "reward_range": (70, 90),
-        "hp_multiplier": 0.9,
+        "hp_multiplier": 2.0,
         "damage_range": (14, 26),
         "exp_reward": 30
     },
@@ -111,7 +115,7 @@ ENEMY_TYPES = {
         "level_req": 10,
         "time_limit": 4.5,
         "reward_range": (90, 110),
-        "hp_multiplier": 1.0,
+        "hp_multiplier": 2.2,
         "damage_range": (16, 30),
         "exp_reward": 35
     },
@@ -120,7 +124,7 @@ ENEMY_TYPES = {
         "level_req": 12,
         "time_limit": 4.0,
         "reward_range": (120, 160),
-        "hp_multiplier": 1.1,
+        "hp_multiplier": 2.5,
         "damage_range": (18, 35),
         "exp_reward": 45
     },
@@ -129,7 +133,7 @@ ENEMY_TYPES = {
         "level_req": 15,
         "time_limit": 3.0,
         "reward_range": (160, 300),
-        "hp_multiplier": 1.3,
+        "hp_multiplier": 3.0,
         "damage_range": (22, 45),
         "exp_reward": 60
     },
@@ -138,7 +142,7 @@ ENEMY_TYPES = {
         "level_req": 20,
         "time_limit": 2.75,
         "reward_range": (300, 400),
-        "hp_multiplier": 1.6,
+        "hp_multiplier": 3.5,
         "damage_range": (30, 60),
         "exp_reward": 100
     }
@@ -205,7 +209,6 @@ def format_reward(gold, player_count):
     return gold - remainder
 
 def check_map_unlock(uid):
-    """Kiểm tra và mở khóa map mới dựa trên level"""
     level = user_data[uid]["level"]
     unlocked = user_data[uid]["unlocked_maps"]
     
@@ -263,14 +266,14 @@ async def start_battle(interaction, players, is_boss=False):
         enemy_data = {
             "name": "👾 BOSS CỰC KỲ TO TƯỚNG 👾",
             "time_limit": 4.0,
-            "hp_multiplier": 2.0,
+            "hp_multiplier": 4.0,
             "damage_range": (30, 70),
             "reward_range": (200, 500),
             "exp_reward": 100
         }
     
     total_hp_players = sum(p["hp_max"] for p in players)
-    monster_hp = max(20, int(total_hp_players * enemy_data["hp_multiplier"]))
+    monster_hp = max(30, int(total_hp_players * enemy_data["hp_multiplier"]))
     
     battle_data = {
         "players": players,
@@ -295,7 +298,6 @@ async def process_turn(channel_id):
     if not battle or battle["game_over"]:
         return
     
-    # Kiểm tra quái chết
     if battle["monster_hp"] <= 0:
         await end_battle(channel_id, win=True)
         return
@@ -303,12 +305,10 @@ async def process_turn(channel_id):
     channel = bot.get_channel(channel_id)
     alive_players = [p for p in battle["players"] if p["hp_current"] > 0]
     
-    # Kiểm tra người chơi còn sống
     if not alive_players:
         await end_battle(channel_id, win=False)
         return
     
-    # Lấy lượt hiện tại
     current = battle["current_turn"] % len(alive_players)
     player = alive_players[current]
     battle["current_turn"] += 1
@@ -343,8 +343,6 @@ async def process_turn(channel_id):
             await channel.send(f"💀 {player['user'].mention} **đã ngã xuống!** Chờ 20 giây mới hồi sinh.")
     
     await asyncio.sleep(1.5)
-    
-    # Gọi tiếp lượt sau
     asyncio.create_task(process_turn(channel_id))
 
 async def end_battle(channel_id, win):
@@ -403,6 +401,78 @@ async def end_battle(channel_id, win):
         msg = f"{funny}\n━━━━━━━━━━━━━━━━━━━━━\n💀 **THẤT BẠI!** 💀\nCả đội đã chết. Hãy dùng `/daily` kiếm xu mua đồ và thử lại."
         await channel.send(msg)
 
+# ==================== DEBUG COMMAND (OWNER ONLY) ====================
+def is_owner(interaction: discord.Interaction):
+    return interaction.user.id == OWNER_ID
+
+@bot.tree.command(name='debug', description="🔧 Debug commands (Owner only)")
+@app_commands.describe(action="Hành động: set_gold, set_level, set_map, revive, heal, add_item")
+@app_commands.describe(target="User tag", value="Giá trị (cho set_gold/set_level)")
+async def debug(interaction: discord.Interaction, action: str, target: discord.User = None, value: str = None):
+    if not is_owner(interaction):
+        return await interaction.response.send_message("❌ Chỉ owner mới xài được lệnh này!", ephemeral=True)
+    
+    if not target:
+        target = interaction.user
+    
+    uid = str(target.id)
+    init_user(uid)
+    
+    action = action.lower()
+    
+    if action == "set_gold" and value:
+        try:
+            new_gold = int(value)
+            user_data[uid]["gold"] = new_gold
+            save_db()
+            await interaction.response.send_message(f"✅ Đã set **{target.display_name}** có {new_gold} xu!")
+        except:
+            await interaction.response.send_message("❌ value phải là số!")
+    
+    elif action == "set_level" and value:
+        try:
+            new_level = int(value)
+            user_data[uid]["level"] = new_level
+            user_data[uid]["hp_max"] = 50 + new_level * 5
+            user_data[uid]["hp_current"] = user_data[uid]["hp_max"]
+            user_data[uid]["exp"] = 0
+            save_db()
+            await interaction.response.send_message(f"✅ Đã set **{target.display_name}** lên level {new_level}!")
+        except:
+            await interaction.response.send_message("❌ value phải là số!")
+    
+    elif action == "set_map" and value:
+        value = value.lower()
+        if value in ENEMY_TYPES:
+            user_data[uid]["current_map"] = value
+            if value not in user_data[uid]["unlocked_maps"]:
+                user_data[uid]["unlocked_maps"].append(value)
+            save_db()
+            await interaction.response.send_message(f"✅ Đã set map cho **{target.display_name}** thành {ENEMY_TYPES[value]['name']}!")
+        else:
+            await interaction.response.send_message("❌ Map không hợp lệ!")
+    
+    elif action == "revive":
+        user_data[uid]["death_time"] = None
+        user_data[uid]["hp_current"] = user_data[uid]["hp_max"]
+        save_db()
+        await interaction.response.send_message(f"✅ Đã hồi sinh **{target.display_name}**!")
+    
+    elif action == "heal":
+        user_data[uid]["hp_current"] = user_data[uid]["hp_max"]
+        save_db()
+        await interaction.response.send_message(f"✅ Đã hồi đầy HP cho **{target.display_name}**!")
+    
+    elif action == "add_item" and value:
+        if "inventory" not in user_data[uid]:
+            user_data[uid]["inventory"] = {}
+        user_data[uid]["inventory"][value] = user_data[uid]["inventory"].get(value, 0) + 1
+        save_db()
+        await interaction.response.send_message(f"✅ Đã thêm **{value}** vào inventory của {target.display_name}!")
+    
+    else:
+        await interaction.response.send_message("❌ Action không hợp lệ!\nCác action: `set_gold`, `set_level`, `set_map`, `revive`, `heal`, `add_item`")
+
 # ==================== SLASH COMMANDS ====================
 @bot.tree.command(name='go_hunt', description="🐉 Săn quái (rủ thêm 1-3 bạn)")
 @app_commands.describe(nguoi1="Tag người chơi thứ 2", nguoi2="Tag người chơi thứ 3", nguoi3="Tag người chơi thứ 4")
@@ -418,7 +488,6 @@ async def go_hunt(interaction: discord.Interaction, nguoi1: discord.User = None,
             players.append(p)
     players = list(dict.fromkeys(players))
     
-    # Check cooldown
     for p in players:
         uid = str(p.id)
         init_user(uid)
@@ -456,7 +525,6 @@ async def go_hunt(interaction: discord.Interaction, nguoi1: discord.User = None,
     if len(final_players) == 0:
         return await interaction.followup.send("❌ Không ai tham gia, hủy săn...")
     
-    # Set cooldown
     battle_players = []
     for p in final_players:
         uid = str(p.id)
@@ -484,7 +552,6 @@ async def boss_hunt(interaction: discord.Interaction, nguoi1: discord.User = Non
             players.append(p)
     players = list(dict.fromkeys(players))
     
-    # Check boss cooldown (3 phút)
     if interaction.channel_id in boss_cooldowns:
         remaining = int((boss_cooldowns[interaction.channel_id] - datetime.now()).seconds)
         if remaining > 0:
@@ -527,7 +594,7 @@ async def boss_hunt(interaction: discord.Interaction, nguoi1: discord.User = Non
     if len(final_players) == 0:
         return await interaction.followup.send("❌ Không ai tham gia, boss bỏ đi...")
     
-    boss_cooldowns[interaction.channel_id] = datetime.now() + timedelta(seconds=180)  # 3 phút
+    boss_cooldowns[interaction.channel_id] = datetime.now() + timedelta(seconds=180)
     battle_players = []
     for p in final_players:
         uid = str(p.id)
@@ -550,7 +617,6 @@ async def pass_map(interaction: discord.Interaction):
     current_data = ENEMY_TYPES[current_map]
     unlocked = user_data[uid]["unlocked_maps"]
     
-    # Tìm map tiếp theo
     map_order = ["beginner", "very_easy", "easy", "quite_normal", "normal", "quite_hard", "hard", "elite", "master"]
     current_index = map_order.index(current_map) if current_map in map_order else 0
     
@@ -577,7 +643,6 @@ async def pass_map(interaction: discord.Interaction):
     else:
         msg += f"🏆 **Bạn đã đạt map cao nhất!** 🏆\n"
     
-    # Hiển thị các map đã mở khóa
     msg += f"\n**🗺️ Các map đã mở khóa:**\n"
     for map_name in unlocked:
         map_data = ENEMY_TYPES[map_name]
@@ -595,7 +660,7 @@ async def change_map(interaction: discord.Interaction, map_name: str):
     
     map_name = map_name.lower()
     if map_name not in ENEMY_TYPES:
-        return await interaction.response.send_message("❌ Tên map không hợp lệ! Các map: beginner, very_easy, easy, quite_normal, normal, quite_hard, hard, elite, master")
+        return await interaction.response.send_message("❌ Tên map không hợp lệ!")
     
     if map_name not in user_data[uid]["unlocked_maps"]:
         req_level = ENEMY_TYPES[map_name]["level_req"]
@@ -605,18 +670,18 @@ async def change_map(interaction: discord.Interaction, map_name: str):
     save_db()
     
     map_data = ENEMY_TYPES[map_name]
-    await interaction.response.send_message(f"🗺️ Đã chuyển sang map **{map_data['name']}**!\n⏱️ Thời gian phản xạ: {map_data['time_limit']}s | 💰 Phần thưởng: {map_data['reward_range'][0]}-{map_data['reward_range'][1]} xu")
+    await interaction.response.send_message(f"🗺️ Đã chuyển sang map **{map_data['name']}**!\n⏱️ Thời gian: {map_data['time_limit']}s | 💰 Xu: {map_data['reward_range'][0]}-{map_data['reward_range'][1]}")
 
 @bot.tree.command(name='map_info', description="🗺️ Xem thông tin các map")
 async def map_info(interaction: discord.Interaction):
     msg = f"**🗺️ THÔNG TIN CÁC MAP**\n━━━━━━━━━━━━━━━━━━━━━\n"
     for key, data in ENEMY_TYPES.items():
         msg += f"\n**{data['name']}**\n"
-        msg += f"   📊 Level yêu cầu: {data['level_req']}+\n"
+        msg += f"   📊 Level: {data['level_req']}+\n"
         msg += f"   ⏱️ Thời gian: {data['time_limit']}s\n"
         msg += f"   💰 Xu: {data['reward_range'][0]}-{data['reward_range'][1]}\n"
         msg += f"   ✨ Exp: {data['exp_reward']}\n"
-    msg += f"\n━━━━━━━━━━━━━━━━━━━━━\n💡 Dùng `/pass` để vượt ải mở khóa map mới!"
+    msg += f"\n━━━━━━━━━━━━━━━━━━━━━\n💡 Dùng `/pass` để vượt ải!"
     await interaction.response.send_message(msg)
 
 @bot.tree.command(name='shop', description="🛒 Xem cửa hàng")
@@ -627,9 +692,9 @@ async def shop(interaction: discord.Interaction):
     msg = f"**🛒 CỬA HÀNG SĂN QUÁI**\n━━━━━━━━━━━━━━━━━━━━━\n"
     msg += f"💰 **Xu của bạn:** {user_data[uid]['gold']}\n\n"
     msg += f"**⚔️ VŨ KHÍ**\n• `kiếm sắt` - 150 xu (+25% dame)\n• `kiếm thép` - 300 xu (+50% dame)\n• `rìu chiến` - 500 xu (+80% dame)\n• `kiếm huyền thoại` - 1000 xu (+120% dame)\n\n"
-    msg += f"**🛡️ GIÁP**\n• `áo da` - 120 xu (-25% dame nhận)\n• `áo giáp sắt` - 280 xu (-45% dame)\n• `áo thần` - 600 xu (-65% dame)\n\n"
-    msg += f"**💊 VẬT PHẨM**\n• `bình máu nhỏ` - 50 xu (hồi 30% HP)\n• `bình máu lớn` - 100 xu (hồi 60% HP)\n• `bình máu to` - 200 xu (hồi 100% HP)\n• `bùa may mắn` - 150 xu (+10% dame 1 trận)\n• `thẻ hồi sinh` - 300 xu (revive 1 lần)\n\n"
-    msg += f"━━━━━━━━━━━━━━━━━━━━━\n💡 Dùng `/buy [tên]` để mua, `/use [tên]` để xài"
+    msg += f"**🛡️ GIÁP**\n• `áo da` - 120 xu (-25% dame)\n• `áo giáp sắt` - 280 xu (-45% dame)\n• `áo thần` - 600 xu (-65% dame)\n\n"
+    msg += f"**💊 VẬT PHẨM**\n• `bình máu nhỏ` - 50 xu (hồi 30%)\n• `bình máu lớn` - 100 xu (hồi 60%)\n• `bình máu to` - 200 xu (hồi 100%)\n• `bùa may mắn` - 150 xu (+10% dame)\n• `thẻ hồi sinh` - 300 xu (revive)\n\n"
+    msg += f"━━━━━━━━━━━━━━━━━━━━━\n💡 `/buy [tên]` `/use [tên]`"
     await interaction.response.send_message(msg)
 
 @bot.tree.command(name='buy', description="💰 Mua đồ")
@@ -655,11 +720,11 @@ async def buy(interaction: discord.Interaction, item: str):
     
     item_lower = item.lower()
     if item_lower not in items:
-        return await interaction.response.send_message("❌ Không có món này! Dùng `/shop` để xem.")
+        return await interaction.response.send_message("❌ Không có món này!")
     
     data = items[item_lower]
     if user_data[uid]["gold"] < data["price"]:
-        return await interaction.response.send_message(f"💸 Bạn cần {data['price']} xu nhưng chỉ có {user_data[uid]['gold']} xu!")
+        return await interaction.response.send_message(f"💸 Cần {data['price']} xu, bạn chỉ có {user_data[uid]['gold']}!")
     
     user_data[uid]["gold"] -= data["price"]
     
@@ -669,17 +734,17 @@ async def buy(interaction: discord.Interaction, item: str):
             user_data[uid]["weapon"] = data["value"]
         else:
             user_data[uid]["armor"] = data["value"]
-        msg = f"✅ Đã mua **{data['value']}**! Thay thế `{old}` → `{data['value']}`"
+        msg = f"✅ Đã mua **{data['value']}**! Thay `{old}` → `{data['value']}`"
     else:
         if "inventory" not in user_data[uid]:
             user_data[uid]["inventory"] = {}
         user_data[uid]["inventory"][data["value"]] = user_data[uid]["inventory"].get(data["value"], 0) + 1
-        msg = f"✅ Đã mua **{data['value']}** x1! Hiện có: {user_data[uid]['inventory'][data['value']]} cái"
+        msg = f"✅ Đã mua **{data['value']}** x1!"
     
     save_db()
-    await interaction.response.send_message(f"{msg}\n💰 Xu còn lại: {user_data[uid]['gold']}")
+    await interaction.response.send_message(f"{msg}\n💰 Còn: {user_data[uid]['gold']} xu")
 
-@bot.tree.command(name='use', description="💊 Sử dụng vật phẩm")
+@bot.tree.command(name='use', description="💊 Dùng vật phẩm")
 @app_commands.describe(item="Tên vật phẩm")
 async def use_item(interaction: discord.Interaction, item: str):
     uid = str(interaction.user.id)
@@ -690,7 +755,7 @@ async def use_item(interaction: discord.Interaction, item: str):
     
     item_lower = item.lower()
     if user_data[uid]["inventory"].get(item_lower, 0) == 0:
-        return await interaction.response.send_message(f"❌ Bạn không có **{item_lower}** nào!")
+        return await interaction.response.send_message(f"❌ Không có **{item_lower}**!")
     
     user_data[uid]["inventory"][item_lower] -= 1
     if user_data[uid]["inventory"][item_lower] == 0:
@@ -700,17 +765,17 @@ async def use_item(interaction: discord.Interaction, item: str):
         heal_pct = {"bình máu nhỏ": 0.3, "bình máu lớn": 0.6, "bình máu to": 1.0}
         heal = int(user_data[uid]["hp_max"] * heal_pct[item_lower])
         user_data[uid]["hp_current"] = min(user_data[uid]["hp_max"], user_data[uid]["hp_current"] + heal)
-        msg = f"💚 Dùng **{item_lower}**: hồi {heal} HP! Hiện tại: {user_data[uid]['hp_current']}/{user_data[uid]['hp_max']}"
+        msg = f"💚 Dùng **{item_lower}**: hồi {heal} HP! HP: {user_data[uid]['hp_current']}/{user_data[uid]['hp_max']}"
     elif item_lower == "bùa may mắn":
         if "active_buffs" not in user_data[uid]:
             user_data[uid]["active_buffs"] = []
         user_data[uid]["active_buffs"].append({"type": "dame", "remaining": 1, "name": "bùa may mắn"})
-        msg = f"✨ Dùng **bùa may mắn**: +10% dame trong trận tiếp theo!"
+        msg = f"✨ Dùng **bùa may mắn**: +10% dame trận sau!"
     elif item_lower == "thẻ hồi sinh":
         user_data[uid]["death_time"] = None
         if user_data[uid]["hp_current"] == 0:
             user_data[uid]["hp_current"] = user_data[uid]["hp_max"] // 2
-        msg = f"🔄 Dùng **thẻ hồi sinh**: hồi sinh với {user_data[uid]['hp_current']}/{user_data[uid]['hp_max']} HP!"
+        msg = f"🔄 Dùng **thẻ hồi sinh**: hồi sinh! HP: {user_data[uid]['hp_current']}/{user_data[uid]['hp_max']}"
     else:
         msg = f"✅ Đã dùng **{item_lower}**!"
     
@@ -726,13 +791,13 @@ async def daily(interaction: discord.Interaction):
     last = user_data[uid].get("last_daily")
     
     if last and datetime.strptime(last, "%Y-%m-%d").date() == today:
-        return await interaction.response.send_message("⏰ Hôm nay bạn đã nhận rồi! Quay lại mai nha!")
+        return await interaction.response.send_message("⏰ Hôm nay đã nhận rồi!")
     
     user_data[uid]["gold"] += 50
     user_data[uid]["last_daily"] = str(today)
     save_db()
     
-    await interaction.response.send_message(f"🎁 Bạn nhận **50 xu**! Hiện có: {user_data[uid]['gold']} xu")
+    await interaction.response.send_message(f"🎁 Nhận **50 xu**! Hiện: {user_data[uid]['gold']} xu")
 
 @bot.tree.command(name='inv', description="📦 Xem túi đồ")
 async def inventory(interaction: discord.Interaction):
@@ -747,21 +812,16 @@ async def inventory(interaction: discord.Interaction):
     msg += f"🛡️ **Giáp:** {d['armor']}\n"
     msg += f"❤️ **HP:** {d['hp_current']}/{d['hp_max']}\n"
     msg += f"📊 **Level:** {d['level']} (exp: {d['exp']}/100)\n"
-    msg += f"🗺️ **Map hiện tại:** {current_map['name']}\n"
+    msg += f"🗺️ **Map:** {current_map['name']}\n"
     
     if "inventory" in d and d["inventory"]:
         msg += f"\n💊 **Vật phẩm:**\n"
         for item, count in d["inventory"].items():
-            msg += f"• {item}: {count} cái\n"
+            msg += f"• {item}: {count}\n"
     else:
-        msg += f"\n💊 **Vật phẩm:** Không có\n"
+        msg += f"\n💊 **Vật phẩm:** Không\n"
     
-    if "active_buffs" in d and d["active_buffs"]:
-        msg += f"\n✨ **Buff:**\n"
-        for buff in d["active_buffs"]:
-            msg += f"• {buff['name']}\n"
-    
-    msg += f"\n━━━━━━━━━━━━━━━━━━━━━\n💡 Dùng `/use [tên]` để xài vật phẩm"
+    msg += f"\n━━━━━━━━━━━━━━━━━━━━━\n💡 `/use [tên]` để xài"
     await interaction.response.send_message(msg)
 
 @bot.tree.command(name='tutorial', description="📖 Hướng dẫn chơi")
@@ -770,38 +830,32 @@ async def tutorial(interaction: discord.Interaction):
 ━━━━━━━━━━━━━━━━━━━━━
 
 **🎮 CÁCH CHƠI**
-1. `/go_hunt @bạn` (rủ thêm 1-3 bạn)
+1. `/go_hunt @bạn` (rủ 1-3 bạn)
 2. Gõ `ok` trong 30s để tham gia
-3. Mỗi lượt bot yêu cầu gõ **chữ cái** trong thời gian map quy định
-   - ✅ Gõ đúng: đánh quái
-   - ❌ Gõ sai/chậm: quái đánh bạn
+3. Mỗi lượt gõ đúng chữ cái trong thời gian map quy định
 
-**🗺️ HỆ THỐNG MAP (9 cấp độ)**
-• Beginner (8s) → Very Easy (7.5s) → Easy (6s) → Quite Normal (5.5s)
-• Normal (5s) → Quite Hard (4.5s) → Hard (4s) → Elite (3s) → Master (2.75s)
-- Dùng `/pass` để vượt ải mở map mới
-- Dùng `/change_map` để đổi map săn
+**🗺️ 9 CẤP ĐỘ MAP**
+Beginner(8s) → Very Easy(7.5s) → Easy(6s) → Quite Normal(5.5s)
+Normal(5s) → Quite Hard(4.5s) → Hard(4s) → Elite(3s) → Master(2.75s)
+- `/pass` vượt ải | `/change_map` đổi map
 
 **👾 SĂN BOSS**
-- `/boss` -> boss mạnh hơn, respawn 3 phút
-- Phần thưởng cao hơn (200-500 xu)
+`/boss` -> respawn 3 phút, thưởng 200-500 xu
 
-**🛒 SHOP & VẬT PHẨM**
-- `/shop` xem đồ, `/buy [tên]` mua
-- Vũ khí: tăng dame | Giáp: giảm sát thương
+**🛒 SHOP**
+`/shop` xem | `/buy` mua | `/use` xài
 
 **🎁 HÀNG NGÀY**
-- `/daily` nhận 50 xu/ngày
-- `/inv` xem túi đồ
+`/daily` 50 xu | `/inv` xem túi
 
 ━━━━━━━━━━━━━━━━━━━━━
-💡 Mỗi lần săn xong chờ 10s để quái respawn!"""
+💡 Săn xong chờ 10s để quái respawn!"""
     await interaction.response.send_message(msg)
 
-@bot.tree.command(name='backup', description="💾 Lưu dữ liệu lên GitHub Gist")
+@bot.tree.command(name='backup', description="💾 Backup data lên GitHub Gist")
 async def backup(interaction: discord.Interaction):
     if not GIST_TOKEN:
-        return await interaction.response.send_message("❌ Chưa cấu hình GIST_TOKEN trong environment!")
+        return await interaction.response.send_message("❌ Chưa cấu hình GIST_TOKEN!")
     
     await interaction.response.defer()
     save_db()
@@ -815,21 +869,25 @@ async def backup(interaction: discord.Interaction):
         url = f"https://api.github.com/gists/{GIST_ID}"
         payload = {"files": {"hunt_bot_backup.json": {"content": data}}}
         resp = requests.patch(url, headers=headers, json=payload)
+        if resp.status_code == 200:
+            await interaction.followup.send("✅ Backup thành công!")
+        else:
+            await interaction.followup.send(f"❌ Backup thất bại: {resp.text}")
     else:
         url = "https://api.github.com/gists"
         payload = {"description": "Discord Hunt Bot Backup", "public": False, "files": {"hunt_bot_backup.json": {"content": data}}}
         resp = requests.post(url, headers=headers, json=payload)
-    
-    if resp.status_code in [200, 201]:
-        if not GIST_ID:
+        
+        if resp.status_code == 201:
             new_id = resp.json()["id"]
-            await interaction.followup.send(f"✅ Backup thành công!\n🔑 **GIST ID:** `{new_id}`\n📌 Hãy thêm biến môi trường `GIST_ID={new_id}` để restore sau này!")
+            # Lưu GIST_ID vào file .env
+            env_path = os.path.join(os.getcwd(), ENV_FILE)
+            set_key(env_path, "GIST_ID", new_id)
+            await interaction.followup.send(f"✅ Backup thành công!\n🔑 **GIST ID:** `{new_id}`\n✅ Đã tự động lưu vào file .env!\n📌 Lần sau backup sẽ tự động update.")
         else:
-            await interaction.followup.send("✅ Backup thành công!")
-    else:
-        await interaction.followup.send(f"❌ Backup thất bại: {resp.text}")
+            await interaction.followup.send(f"❌ Backup thất bại: {resp.text}")
 
-@bot.tree.command(name='restore', description="🔄 Khôi phục dữ liệu từ GitHub Gist")
+@bot.tree.command(name='restore', description="🔄 Restore data từ GitHub Gist")
 async def restore(interaction: discord.Interaction):
     if not GIST_TOKEN or not GIST_ID:
         return await interaction.response.send_message("❌ Chưa cấu hình GIST_TOKEN hoặc GIST_ID!")
