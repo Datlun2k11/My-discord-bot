@@ -17,9 +17,9 @@ TOKEN = os.getenv('DISCORD_TOKEN')
 GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix='/', intents=intents)
+intents = discord.Intents.all()  # hoặc discord.Intents.default() + bật thêm message_content
+bot = commands.Bot(command_prefix=['!', '/'], intents=intents)
 
 # Database đơn giản (dùng dict, nâng lên SQLite sau nếu muốn)
 user_data = {}
@@ -51,7 +51,7 @@ async def call_groq_ai(outcome, custom_context=""):
         prompt += f"\nBối cảnh thêm: {custom_context}"
     
     payload = {
-        "model": "deepseek-r1-distill-llama-70b",  # GPT-OSS-120B không có sẵn, dùng model tốt nhất
+        "model": "openai/gpt-oss-120b",  # GPT-OSS-120B không có sẵn, dùng model tốt nhất
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.9,
         "max_tokens": 150
@@ -101,7 +101,6 @@ async def go_hunt(ctx):
     user_id = str(ctx.author.id)
     init_user(user_id)
     
-    # Cooldown 10 giây để tránh spam AI
     cooldown_key = f"{user_id}_hunt"
     if cooldown_key in cooldowns:
         time_left = (cooldowns[cooldown_key] - datetime.now()).total_seconds()
@@ -111,14 +110,11 @@ async def go_hunt(ctx):
     
     cooldowns[cooldown_key] = datetime.now() + timedelta(seconds=10)
     
-    # Random kết quả (50/50 cơ bản, có thể nâng cấp theo đồ)
     is_win = random.choice([True, False])
     
-    # Gọi AI để sinh câu chuyện
     async with ctx.typing():
         story = await call_groq_ai("win" if is_win else "lose", f"user có {user_data[user_id]['weapon']} và {user_data[user_id]['armor']}")
     
-    # Tính toán phần thưởng
     if is_win:
         reward = random.randint(15, 50)
         user_data[user_id]["gold"] += reward
@@ -163,22 +159,22 @@ async def shop(ctx):
     await ctx.send(embed=embed)
 
 @bot.command(name='buy')
-async def buy(ctx, item: str):
+async def buy(ctx, *, item: str):
     user_id = str(ctx.author.id)
     init_user(user_id)
     gold = user_data[user_id]["gold"]
     
-    if item.lower() == "kiếm sắt" and gold >= 100:
+    if "kiếm sắt" in item.lower() and gold >= 100:
         user_data[user_id]["gold"] -= 100
         user_data[user_id]["weapon"] = "kiếm sắt"
         await ctx.send(f"⚔️ {ctx.author.mention} Đã mua **Kiếm sắt**! Còn {user_data[user_id]['gold']} xu")
-    elif item.lower() == "áo da" and gold >= 80:
+    elif "áo da" in item.lower() and gold >= 80:
         user_data[user_id]["gold"] -= 80
         user_data[user_id]["armor"] = "áo da"
         await ctx.send(f"🛡️ {ctx.author.mention} Đã mua **Áo da**! Còn {user_data[user_id]['gold']} xu")
-    elif item.lower() == "thuốc hồi máu" and gold >= 30:
+    elif "thuốc" in item.lower() and gold >= 30:
         user_data[user_id]["gold"] -= 30
-        user_data[user_id]["gold"] += 10  # Instant effect
+        user_data[user_id]["gold"] += 10
         await ctx.send(f"💊 {ctx.author.mention} Dùng thuốc! Nhận 10 xu, tổng: {user_data[user_id]['gold']} xu")
     else:
         await ctx.send(f"❌ Không đủ xu hoặc không có món `{item}` trong shop!")
@@ -224,13 +220,13 @@ async def top_rich(ctx):
     
     embed = discord.Embed(title="💰 Bảng xếp hạng giàu nhất 💰", color=discord.Color.gold())
     for i, (uid, data) in enumerate(sorted_users, 1):
-        user = await bot.fetch_user(int(uid))
-        embed.add_field(name=f"#{i} {user.name}", value=f"{data['gold']} xu", inline=False)
+        try:
+            user = await bot.fetch_user(int(uid))
+            embed.add_field(name=f"#{i} {user.name}", value=f"{data['gold']} xu", inline=False)
+        except:
+            embed.add_field(name=f"#{i} Người lạ", value=f"{data['gold']} xu", inline=False)
     
     await ctx.send(embed=embed)
-
-# Chạy Flask trong thread riêng
-threading.Thread(target=run_flask, daemon=True).start()
 
 # Chạy bot
 if __name__ == "__main__":
