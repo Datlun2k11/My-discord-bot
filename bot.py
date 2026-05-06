@@ -855,7 +855,7 @@ Normal(5s) → Quite Hard(4.5s) → Hard(4s) → Elite(3s) → Master(2.75s)
 @bot.tree.command(name='backup', description="💾 Backup data lên GitHub Gist")
 async def backup(interaction: discord.Interaction):
     if not GIST_TOKEN:
-        return await interaction.response.send_message("❌ Chưa cấu hình GIST_TOKEN!")
+        return await interaction.response.send_message("❌ Chưa cấu hình GIST_TOKEN trong environment!")
     
     await interaction.response.defer()
     save_db()
@@ -869,6 +869,7 @@ async def backup(interaction: discord.Interaction):
         url = f"https://api.github.com/gists/{GIST_ID}"
         payload = {"files": {"hunt_bot_backup.json": {"content": data}}}
         resp = requests.patch(url, headers=headers, json=payload)
+        
         if resp.status_code == 200:
             await interaction.followup.send("✅ Backup thành công!")
         else:
@@ -879,11 +880,14 @@ async def backup(interaction: discord.Interaction):
         resp = requests.post(url, headers=headers, json=payload)
         
         if resp.status_code == 201:
-            new_id = resp.json()["id"]
-            # Lưu GIST_ID vào file .env
-            env_path = os.path.join(os.getcwd(), ENV_FILE)
-            set_key(env_path, "GIST_ID", new_id)
-            await interaction.followup.send(f"✅ Backup thành công!\n🔑 **GIST ID:** `{new_id}`\n✅ Đã tự động lưu vào file .env!\n📌 Lần sau backup sẽ tự động update.")
+            gist_id = resp.json()["id"]
+            await interaction.followup.send(
+                f"✅ Backup thành công!\n"
+                f"🔑 **GIST ID:** `{gist_id}`\n"
+                f"📌 **Hãy thêm biến môi trường `GIST_ID={gist_id}` vào Render Dashboard!**\n"
+                f"   (Environment → Add Variable → GIST_ID = {gist_id})\n"
+                f"   Sau đó chạy lại `/backup` lần nữa để tự động update."
+            )
         else:
             await interaction.followup.send(f"❌ Backup thất bại: {resp.text}")
 
