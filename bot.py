@@ -280,7 +280,6 @@ async def start_battle(interaction, players, is_boss=False):
         "game_over": False,
         "is_boss": is_boss,
         "enemy_data": enemy_data,
-        "start_time": datetime.now(),
         "channel_id": channel_id
     }
     bot.active_battles[channel_id] = battle_data
@@ -288,8 +287,12 @@ async def start_battle(interaction, players, is_boss=False):
     channel = bot.get_channel(channel_id)
     monster_type = "🔥 BOSS 🔥" if is_boss else f"🐉 {enemy_data['name']} 🐉"
     await channel.send(f"⚔️ **TRẬN CHIẾN BẮT ĐẦU!** ⚔️\n{monster_type} có **{monster_hp} HP**!\n⏱️ Thời gian mỗi lượt: {enemy_data['time_limit']} giây")
+    
+    # Gọi process_turn và tạo task riêng để không bị treo
+    asyncio.create_task(process_turn(channel_id))
 
 async def process_turn(channel_id):
+    import asyncio
     battle = bot.active_battles.get(channel_id)
     if not battle or battle["game_over"]:
         return
@@ -318,7 +321,7 @@ async def process_turn(channel_id):
         return m.author.id == player["user"].id and m.content.strip().upper() == symbol and m.channel.id == channel_id
     
     try:
-        await bot.wait_for('message', timeout=time_limit, check=check)
+        msg = await bot.wait_for('message', timeout=time_limit, check=check)
         dmg = get_damage(player["user"].id)
         battle["monster_hp"] = max(0, battle["monster_hp"] - dmg)
         await channel.send(f"✅ {player['user'].mention} **đánh trúng!** Gây {dmg} sát thương. Quái còn {battle['monster_hp']} HP.")
@@ -334,64 +337,8 @@ async def process_turn(channel_id):
             await channel.send(f"💀 {player['user'].mention} **đã ngã xuống!** Chờ 20 giây mới hồi sinh.")
     
     await asyncio.sleep(1.5)
-    await process_turn(channel_id)
-
-async def end_battle(channel_id, win):
-    battle = bot.active_battles.pop(channel_id, None)
-    if not battle:
-        return
-    
-    channel = bot.get_channel(channel_id)
-    alive_players = [p for p in battle["players"] if p["hp_current"] > 0]
-    
-    funny = await get_funny_comment(win, monster_type="BOSS" if battle["is_boss"] else battle["enemy_data"]["name"])
-    
-    if win and alive_players:
-        if battle["is_boss"]:
-            reward_total = random.randint(*battle["enemy_data"]["reward_range"])
-            reward_total = format_reward(reward_total, len(alive_players))
-            reward_each = reward_total // len(alive_players)
-            exp_reward = battle["enemy_data"]["exp_reward"]
-        else:
-            reward_total = random.randint(*battle["enemy_data"]["reward_range"])
-            reward_total = format_reward(reward_total, len(alive_players))
-            reward_each = reward_total // len(alive_players)
-            exp_reward = battle["enemy_data"]["exp_reward"]
-        
-        msg = f"{funny}\n━━━━━━━━━━━━━━━━━━━━━\n🏆 **CHIẾN THẮNG!** 🏆\n"
-        msg += f"🎁 **Phần thưởng:** {reward_total} xu (mỗi người {reward_each} xu)\n"
-        
-        for p in alive_players:
-            uid = str(p["user"].id)
-            user_data[uid]["gold"] += reward_each
-            user_data[uid]["total_wins"] += 1
-            user_data[uid]["exp"] += exp_reward
-            user_data[uid]["total_hunts"] += 1
-            
-            # Level up & check map unlock
-            exp_needed = 100 * user_data[uid]["level"]
-            old_level = user_data[uid]["level"]
-            while user_data[uid]["exp"] >= exp_needed:
-                user_data[uid]["level"] += 1
-                user_data[uid]["exp"] -= exp_needed
-                user_data[uid]["hp_max"] = 50 + user_data[uid]["level"] * 5
-                user_data[uid]["hp_current"] = user_data[uid]["hp_max"]
-                exp_needed = 100 * user_data[uid]["level"]
-            
-            new_maps = check_map_unlock(uid)
-            
-            if user_data[uid]["level"] > old_level:
-                msg += f"✨ {p['user'].mention}: **Lên level {user_data[uid]['level']}!** 💪\n"
-                if new_maps:
-                    msg += f"   🗺️ Mở khóa: {', '.join(new_maps)}\n"
-            else:
-                msg += f"✅ {p['user'].mention}: +{reward_each} xu, +{exp_reward} exp\n"
-        
-        save_db()
-        await channel.send(msg)
-    else:
-        msg = f"{funny}\n━━━━━━━━━━━━━━━━━━━━━\n💀 **THẤT BẠI!** 💀\nCả đội đã chết. Hãy dùng `/daily` kiếm xu mua đồ và thử lại."
-        await channel.send(msg)
+    # Gọi lại chính nó để tiếp tục lượt tiếp theo
+    asyncio.create_task(process_turn(channel_id))
 
 # ==================== SLASH COMMANDS ====================
 @bot.tree.command(name='go_hunt', description="🐉 Săn quái (rủ thêm 1-3 bạn)")
