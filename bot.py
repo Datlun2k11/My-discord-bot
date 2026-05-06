@@ -134,102 +134,86 @@ async def process_turn(channel_id):
     if not battle or battle["game_over"]:
         return
     
-    # Loại bỏ người chơi chết
     alive_players = [p for p in battle["players"] if p["hp"] > 0]
     if not alive_players or battle["monster_hp"] <= 0:
         await end_battle(channel_id, win=(battle["monster_hp"] <= 0))
         return
     
-    # Đến lượt người tiếp theo
     current = battle["current_turn"] % len(alive_players)
     player = alive_players[current]
     battle["current_turn"] += 1
     
     letter = get_next_letter()
+    channel = bot.get_channel(channel_id)
     
-    embed = discord.Embed(title="🎲 ĐẾN LƯỢT BẠN!", color=discord.Color.gold())
-    embed.description = f"{player['user'].mention}\n🔤 Hãy nói chữ: **{letter}**\n⏱️ Bạn có 3 giây!"
-    embed.add_field(name="🐉 HP Quái", value=battle["monster_hp"], inline=True)
-    embed.add_field(name="💚 HP Của bạn", value=f"{player['hp']}/{player['hp_max']}", inline=True)
-    
-    await battle["message"].edit(embed=embed)
+    # Tin nhắn thường, không embed
+    await channel.send(f"🔤 **Đến lượt {player['user'].mention}:** hãy nói chữ **{letter}** trong 3 giây!\n🐉 HP Quái: {battle['monster_hp']} | 💚 HP bạn: {player['hp']}/{player['hp_max']}")
     
     def check(m):
         return m.author.id == player["user"].id and m.content.strip().upper() == letter and m.channel.id == channel_id
     
     try:
         await bot.wait_for('message', timeout=3.0, check=check)
-        # Người chơi đánh đúng
         dmg = get_damage(player["user"].id)
         battle["monster_hp"] = max(0, battle["monster_hp"] - dmg)
-        await battle["message"].channel.send(f"✅ {player['user'].mention} đánh trúng! Gây {dmg} sát thương!")
+        await channel.send(f"✅ {player['user'].mention} đánh trúng! **Gây {dmg} sát thương.** Quái còn {battle['monster_hp']} HP.")
     except asyncio.TimeoutError:
-        # Quái đánh người chơi
         dmg = get_damage(player["user"].id, is_monster=True)
         player["hp"] = max(0, player["hp"] - dmg)
-        await battle["message"].channel.send(f"❌ {player['user'].mention} không kịp! Quái đánh {dmg} sát thương!")
+        await channel.send(f"❌ {player['user'].mention} **không kịp!** Quái đánh {dmg} sát thương. Bạn còn {player['hp']} HP.")
         
         if player["hp"] == 0:
             uid = str(player["user"].id)
             user_data[uid]["death_time"] = datetime.now().isoformat()
             save_db()
-            await battle["message"].channel.send(f"💀 {player['user'].mention} đã ngã xuống! Chờ 20s mới hồi sinh.")
+            await channel.send(f"💀 {player['user'].mention} **đã ngã xuống!** Chờ 20 giây mới hồi sinh.")
     
-    # Cập nhật embed hiện trạng
-    await update_battle_status(channel_id)
-    
-    # Chờ 1s rồi xử lý lượt tiếp theo
-    await asyncio.sleep(1)
+    await asyncio.sleep(1.5)
     await process_turn(channel_id)
-
-async def update_battle_status(channel_id):
-    battle = bot.active_battles.get(channel_id)
-    if not battle:
-        return
-    
-    embed = discord.Embed(title="⚔️ TRẬN CHIẾN ĐANG DIỄN RA ⚔️", color=discord.Color.orange())
-    embed.add_field(name="🐉 HP Quái", value=battle["monster_hp"], inline=True)
-    player_list = "\n".join([f"👤 {p['user'].mention} | HP: {p['hp']}/{p['hp_max']}" for p in battle["players"]])
-    embed.add_field(name="🗡️ Đội hình", value=player_list, inline=False)
-    await battle["message"].edit(embed=embed)
 
 async def end_battle(channel_id, win):
     battle = bot.active_battles.pop(channel_id, None)
     if not battle:
         return
     
-    if win:
-        reward_total = format_reward_for_players(0, len([p for p in battle["players"] if p["hp"] > 0]))
-        reward_each = reward_total // len([p for p in battle["players"] if p["hp"] > 0])
+    channel = bot.get_channel(channel_id)
+    alive = [p for p in battle["players"] if p["hp"] > 0]
+    
+    if win and alive:
+        reward_total = random.randint(60, 180)
+        # Làm tròn chia hết
+        reward_total = reward_total - (reward_total % len(alive))
+        reward_each = reward_total // len(alive)
         
-        embed = discord.Embed(title="🏆 CHIẾN THẮNG! 🏆", color=discord.Color.green())
-        result_msg = f"🎉 Cả đội thắng! Nhận {reward_total} xu.\n"
-        for p in battle["players"]:
-            if p["hp"] > 0:
-                uid = str(p["user"].id)
-                user_data[uid]["gold"] += reward_each
-                user_data[uid]["total_wins"] += 1
-                user_data[uid]["exp"] += 20
-                user_data[uid]["total_hunts"] += 1
-                # Level up
+        msg = f"🏆 **CHIẾN THẮNG!** 🏆\nCả đội nhận **{reward_total} xu** (mỗi người {reward_each} xu).\n"
+        
+        for p in alive:
+            uid = str(p["user"].id)
+            user_data[uid]["gold"] += reward_each
+            user_data[uid]["total_wins"] += 1
+            user_data[uid]["exp"] += 20
+            user_data[uid]["total_hunts"] += 1
+            
+            exp_needed = 100 * user_data[uid]["level"]
+            old_level = user_data[uid]["level"]
+            while user_data[uid]["exp"] >= exp_needed:
+                user_data[uid]["level"] += 1
+                user_data[uid]["exp"] -= exp_needed
+                user_data[uid]["hp_max"] = 50 + user_data[uid]["level"] * 5
                 exp_needed = 100 * user_data[uid]["level"]
-                while user_data[uid]["exp"] >= exp_needed:
-                    user_data[uid]["level"] += 1
-                    user_data[uid]["exp"] -= exp_needed
-                    user_data[uid]["hp_max"] = 50 + user_data[uid]["level"] * 5
-                    exp_needed = 100 * user_data[uid]["level"]
-                if user_data[uid]["hp_current"] > user_data[uid]["hp_max"]:
-                    user_data[uid]["hp_current"] = user_data[uid]["hp_max"]
-                result_msg += f"- {p['user'].mention}: +{reward_each} xu, +20 exp (Level {user_data[uid]['level']})\n"
+            
+            if user_data[uid]["hp_current"] > user_data[uid]["hp_max"]:
+                user_data[uid]["hp_current"] = user_data[uid]["hp_max"]
+            
+            if user_data[uid]["level"] > old_level:
+                msg += f"✨ {p['user'].mention}: +{reward_each} xu, +20 exp **→ Lên level {user_data[uid]['level']}!** 💪\n"
             else:
-                result_msg += f"- {p['user'].mention}: chết nên không nhận thưởng\n"
+                msg += f"✅ {p['user'].mention}: +{reward_each} xu, +20 exp ({user_data[uid]['exp']}/100)\n"
+        
         save_db()
-        embed.description = result_msg
-        await battle["message"].channel.send(embed=embed)
+        await channel.send(msg)
     else:
-        embed = discord.Embed(title="💀 THẤT BẠI 💀", color=discord.Color.red())
-        embed.description = "Cả đội đã chết! Hãy hồi phục và thử lại."
-        await battle["message"].channel.send(embed=embed)
+        await channel.send(f"💀 **THẤT BẠI!** 💀\nCả đội đã chết. Hãy dùng `/daily` kiếm xu mua bình máu và thử lại.")
 
 # ==================== SLASH COMMANDS ====================
 @bot.tree.command(name='go_hunt', description="🐉 Săn quái theo lượt, có thể rủ thêm bạn (tối đa 4 người)")
