@@ -12,15 +12,16 @@ import threading
 
 load_dotenv()
 
+# Khởi tạo intents - CÁCH ĐÚNG
+intents = discord.Intents.all()  # Bật toàn bộ quyền
+bot = commands.Bot(command_prefix=['!', '/'], intents=intents)
+
+# ... phần còn lại giữ nguyên
+
 # Discord bot setup
 TOKEN = os.getenv('DISCORD_TOKEN')
 GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-
-intents.message_content = True
-intents = discord.Intents.all()  # hoặc discord.Intents.default() + bật thêm message_content
-bot = commands.Bot(command_prefix=['!', '/'], intents=intents)
-
 # Database đơn giản (dùng dict, nâng lên SQLite sau nếu muốn)
 user_data = {}
 cooldowns = {}
