@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands
+from discord import app_commands
 import aiohttp, asyncio, json, random, os, threading
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
@@ -9,10 +9,20 @@ load_dotenv()
 TOKEN, GROQ_KEY = os.getenv('DISCORD_TOKEN'), os.getenv('GROQ_API_KEY')
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-bot = commands.Bot(command_prefix='/', intents=discord.Intents.all())
+class MyBot(discord.Client):
+    def __init__(self):
+        super().__init__(intents=discord.Intents.all())
+        self.tree = app_commands.CommandTree(self)
+
+    async def setup_hook(self):
+        # Đồng bộ lệnh với Discord
+        await self.tree.sync()
+        print(f"✅ Đã sync xong lệnh Slash cho {self.user}!")
+
+bot = MyBot()
 app = Flask(__name__)
 
-# Database "cùi bắp" nhưng có võ
+# DB lưu file json cho chắc
 DATA_FILE = "user_data.json"
 def load_db():
     try: return json.load(open(DATA_FILE, "r"))
@@ -23,34 +33,35 @@ user_data = load_db()
 cooldowns = {}
 
 @app.route('/')
-def home(): return "AI nhây đang chạy... 🥀"
+def home(): return "Bot nhây đang sống... 🥀"
 
 async def call_groq_ai(outcome, context=""):
     headers = {"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"}
-    prompt = f"Bạn là game master siêu nhây, khịa người chơi vừa {'THẮNG' if outcome == 'win' else 'THUA'}. Dùng tiếng Việt GenZ, lầy lội, 1 câu duy nhất. Bối cảnh: {context}"
-    payload = {"model": "openai/gpt-oss-120b", "messages": [{"role": "user", "content": prompt}], "temperature": 0.9}
-    
+    prompt = f"Bạn là game master nhây, khịa người chơi vừa {'THẮNG' if outcome == 'win' else 'THUA'}. Dùng tiếng Việt GenZ, lầy lội, cực ngắn 1 câu. Bối cảnh: {context}"
+    payload = {"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": prompt}], "temperature": 0.9}
     async with aiohttp.ClientSession() as session:
         try:
             async with session.post(GROQ_URL, headers=headers, json=payload, timeout=5) as resp:
                 data = await resp.json()
                 return data['choices'][0]['message']['content'].strip()
-        except: return "Quái thấy m xấu quá nên nó tự xỉu, m nhận được tiền vì... quá xấu! 💀"
+        except: return "Quái thấy m đẹp trai quá nên nó tự xỉu r! 💀"
 
 def init_user(uid):
     if str(uid) not in user_data:
-        user_data[str(uid)] = {"gold": 100, "weapon": "kiếm gỉ", "armor": "áo rách", "last_daily": None, "hunts": 0}
+        user_data[str(uid)] = {"gold": 100, "weapon": "kiếm gỉ", "armor": "áo rách", "hunts": 0}
         save_db()
 
-@bot.command(name='go_hunt')
-async def go_hunt(ctx):
-    uid = str(ctx.author.id)
+@bot.tree.command(name='go_hunt', description="Đi săn quái kiếm cơm")
+async def go_hunt(interaction: discord.Interaction):
+    uid = str(interaction.user.id)
     init_user(uid)
     
     if uid in cooldowns and datetime.now() < cooldowns[uid]:
-        return await ctx.send(f"Đợi tí bro, quái đang đi vệ sinh, còn {(cooldowns[uid]-datetime.now()).seconds}s! ⌛")
+        return await interaction.response.send_message(f"Đợi tí bro, quái đang đi tắm, còn {(cooldowns[uid]-datetime.now()).seconds}s! ⌛", ephemeral=True)
     
+    await interaction.response.defer() # Tránh lỗi 3s timeout của Discord
     cooldowns[uid] = datetime.now() + timedelta(seconds=15)
+    
     win = random.random() < (0.5 + (0.2 if user_data[uid]['weapon'] == "kiếm sắt" else 0))
     story = await call_groq_ai("win" if win else "lose", f"đồ: {user_data[uid]['weapon']}")
 
@@ -68,18 +79,19 @@ async def go_hunt(ctx):
     
     emb = discord.Embed(title="KẾT QUẢ ĐI SĂN", description=story, color=color)
     emb.set_footer(text=f"Ví: {user_data[uid]['gold']} xu | Săn: {user_data[uid]['hunts']}")
-    await ctx.send(embed=emb)
+    await interaction.followup.send(embed=emb)
 
-@bot.command(name='shop')
-async def shop(ctx):
-    emb = discord.Embed(title="TIỆM ĐỒ CŨ", description="`/buy [tên]` để hốt", color=discord.Color.blue())
+@bot.tree.command(name='shop', description="Tiệm đồ cũ")
+async def shop(interaction: discord.Interaction):
+    emb = discord.Embed(title="TIỆM ĐỒ CŨ", description="Dùng `/buy` để hốt đồ", color=discord.Color.blue())
     emb.add_field(name="kiếm sắt (100)", value="+20% tỉ lệ thắng", inline=False)
     emb.add_field(name="áo da (80)", value="Giảm lỗ khi thua", inline=False)
-    await ctx.send(embed=emb)
+    await interaction.response.send_message(embed=emb)
 
-@bot.command(name='buy')
-async def buy(ctx, *, item: str):
-    uid = str(ctx.author.id)
+@bot.tree.command(name='buy', description="Mua đồ nâng cấp")
+@app_commands.describe(item="Tên món đồ muốn mua")
+async def buy(interaction: discord.Interaction, item: str):
+    uid = str(interaction.user.id)
     init_user(uid)
     prices = {"kiếm sắt": 100, "áo da": 80}
     item = item.lower()
@@ -87,14 +99,15 @@ async def buy(ctx, *, item: str):
         user_data[uid]["gold"] -= prices[item]
         user_data[uid]["weapon" if "kiếm" in item else "armor"] = item
         save_db()
-        await ctx.send(f"Hốt thành công {item}, giờ thì đi báo quái đi! ⚔️")
-    else: await ctx.send("Nghèo mà còn đòi mua đồ hiệu hả bradar? 💸")
+        await interaction.response.send_message(f"Hốt thành công {item}! Giờ thì đi báo quái thôi bradar! ⚔️")
+    else: await interaction.response.send_message("Nghèo quá k đủ xu đâu m ơi! 💸", ephemeral=True)
 
-@bot.command(name='top')
-async def top(ctx):
+@bot.tree.command(name='top', description="Bảng xếp hạng đại gia")
+async def top(interaction: discord.Interaction):
     top_list = sorted(user_data.items(), key=lambda x: x[1]['gold'], reverse=True)[:5]
     txt = "\n".join([f"#{i+1} <@{u[0]}>: {u[1]['gold']} xu" for i, u in enumerate(top_list)])
-    await ctx.send(embed=discord.Embed(title="BẢNG VÀNG ĐẠI GIA", description=txt or "Chưa ai giàu 💀"))
+    await interaction.response.send_message(embed=discord.Embed(title="BẢNG VÀNG ĐẠI GIA", description=txt or "Chưa ai giàu 💀"))
 
-threading.Thread(target=lambda: app.run(host='0.0.0.0', port=8080), daemon=True).start()
+def run_flask(): app.run(host='0.0.0.0', port=8080)
+threading.Thread(target=run_flask, daemon=True).start()
 bot.run(TOKEN)
