@@ -59,6 +59,91 @@ class MyBot(discord.Client):
 
 bot = MyBot()
 
+# ==================== HỆ THỐNG CẤP ĐỘ QUÁI ====================
+ENEMY_TYPES = {
+    "beginner": {
+        "name": "🐣 Beginner",
+        "level_req": 0,
+        "time_limit": 8.0,
+        "reward_range": (10, 20),
+        "hp_multiplier": 0.5,
+        "damage_range": (5, 10),
+        "exp_reward": 10
+    },
+    "very_easy": {
+        "name": "😊 Very Easy",
+        "level_req": 2,
+        "time_limit": 7.5,
+        "reward_range": (20, 30),
+        "hp_multiplier": 0.6,
+        "damage_range": (8, 14),
+        "exp_reward": 15
+    },
+    "easy": {
+        "name": "👍 Easy",
+        "level_req": 4,
+        "time_limit": 6.0,
+        "reward_range": (40, 50),
+        "hp_multiplier": 0.7,
+        "damage_range": (10, 18),
+        "exp_reward": 20
+    },
+    "quite_normal": {
+        "name": "😐 Quite Normal",
+        "level_req": 6,
+        "time_limit": 5.5,
+        "reward_range": (50, 70),
+        "hp_multiplier": 0.8,
+        "damage_range": (12, 22),
+        "exp_reward": 25
+    },
+    "normal": {
+        "name": "😑 Normal",
+        "level_req": 8,
+        "time_limit": 5.0,
+        "reward_range": (70, 90),
+        "hp_multiplier": 0.9,
+        "damage_range": (14, 26),
+        "exp_reward": 30
+    },
+    "quite_hard": {
+        "name": "😤 Quite Hard",
+        "level_req": 10,
+        "time_limit": 4.5,
+        "reward_range": (90, 110),
+        "hp_multiplier": 1.0,
+        "damage_range": (16, 30),
+        "exp_reward": 35
+    },
+    "hard": {
+        "name": "😈 Hard",
+        "level_req": 12,
+        "time_limit": 4.0,
+        "reward_range": (120, 160),
+        "hp_multiplier": 1.1,
+        "damage_range": (18, 35),
+        "exp_reward": 45
+    },
+    "elite": {
+        "name": "💀 Elite",
+        "level_req": 15,
+        "time_limit": 3.0,
+        "reward_range": (160, 300),
+        "hp_multiplier": 1.3,
+        "damage_range": (22, 45),
+        "exp_reward": 60
+    },
+    "master": {
+        "name": "👑 Master",
+        "level_req": 20,
+        "time_limit": 2.75,
+        "reward_range": (300, 400),
+        "hp_multiplier": 1.6,
+        "damage_range": (30, 60),
+        "exp_reward": 100
+    }
+}
+
 # ==================== HELPER ====================
 def init_user(uid):
     uid = str(uid)
@@ -74,6 +159,8 @@ def init_user(uid):
             "death_time": None,
             "total_hunts": 0,
             "total_wins": 0,
+            "unlocked_maps": ["beginner"],
+            "current_map": "beginner",
             "inventory": {},
             "active_buffs": []
         }
@@ -91,26 +178,24 @@ def get_damage(user_id, is_monster=False, monster_type="normal"):
     uid = str(user_id)
     if is_monster:
         if monster_type == "boss":
-            base = random.randint(20, 40)
+            base = random.randint(25, 50)
         else:
-            base = random.randint(8, 18)
+            enemy = ENEMY_TYPES.get(user_data[uid].get("current_map", "beginner"), ENEMY_TYPES["beginner"])
+            base = random.randint(*enemy["damage_range"])
         reduce = get_armor_reduce(user_data[uid]["armor"])
         return int(base * (1 - reduce))
     else:
         base = random.randint(10, 25) + user_data[uid]["level"] * 2
         bonus = get_weapon_bonus(user_data[uid]["weapon"])
-        # Buff từ vật phẩm
         if "active_buffs" in user_data[uid]:
             for buff in user_data[uid]["active_buffs"]:
                 if buff["type"] == "dame":
                     bonus += 10
         return int(base * (1 + bonus / 100))
 
-def get_next_letter():
-    return random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
-
-def get_next_boss_symbol():
-    symbols = ["A", "B", "C", "1", "2", "3", "@", "#", "$", "%", "&", "?"]
+def get_next_symbol():
+    symbols = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", 
+               "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"]
     return random.choice(symbols)
 
 def format_reward(gold, player_count):
@@ -119,13 +204,41 @@ def format_reward(gold, player_count):
     remainder = gold % player_count
     return gold - remainder
 
+def check_map_unlock(uid):
+    """Kiểm tra và mở khóa map mới dựa trên level"""
+    level = user_data[uid]["level"]
+    unlocked = user_data[uid]["unlocked_maps"]
+    
+    unlock_map = {
+        2: "very_easy",
+        4: "easy", 
+        6: "quite_normal",
+        8: "normal",
+        10: "quite_hard",
+        12: "hard",
+        15: "elite",
+        20: "master"
+    }
+    
+    new_maps = []
+    for req_level, map_name in unlock_map.items():
+        if level >= req_level and map_name not in unlocked:
+            unlocked.append(map_name)
+            new_maps.append(ENEMY_TYPES[map_name]["name"])
+    
+    if new_maps:
+        user_data[uid]["unlocked_maps"] = unlocked
+        save_db()
+        return new_maps
+    return []
+
 # ==================== AI FUNNY COMMENT ====================
 async def get_funny_comment(win, monster_type="normal"):
     if not GROQ_KEY:
         return random.choice(["Quái thấy m đẹp trai quá nên tự xỉu!", "Thắng rồi, đi ăn mừng đi bro!"])
     
     headers = {"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"}
-    prompt = f"Hãy viết 1 câu cực kỳ hài hước, lầy lội, style GenZ khi người chơi {'THẮNG' if win else 'THUA'} một trận đấu với {'BOSS MẠNH' if monster_type == 'boss' else 'QUÁI THƯỜNG'} trong game Discord. Chỉ 1 câu ngắn gọn, tối đa 20 từ."
+    prompt = f"Hãy viết 1 câu cực kỳ hài hước, lầy lội, style GenZ khi người chơi {'THẮNG' if win else 'THUA'} một trận đấu với {monster_type} trong game Discord. Chỉ 1 câu ngắn gọn, tối đa 20 từ."
     payload = {"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": prompt}], "temperature": 0.9, "max_tokens": 50}
     
     async with aiohttp.ClientSession() as session:
@@ -141,13 +254,23 @@ async def get_funny_comment(win, monster_type="normal"):
 # ==================== BATTLE SYSTEM ====================
 async def start_battle(interaction, players, is_boss=False):
     channel_id = interaction.channel_id
+    uid = str(interaction.user.id)
     
-    # Tính HP
-    total_hp_players = sum(p["hp_max"] for p in players)
-    if is_boss:
-        monster_hp = int(total_hp_players * 1.2)  # Boss có HP cao hơn
+    if not is_boss:
+        current_map = user_data[uid].get("current_map", "beginner")
+        enemy_data = ENEMY_TYPES[current_map]
     else:
-        monster_hp = int(total_hp_players * 0.7)
+        enemy_data = {
+            "name": "👾 BOSS CỰC KỲ TO TƯỚNG 👾",
+            "time_limit": 4.0,
+            "hp_multiplier": 2.0,
+            "damage_range": (30, 70),
+            "reward_range": (200, 500),
+            "exp_reward": 100
+        }
+    
+    total_hp_players = sum(p["hp_max"] for p in players)
+    monster_hp = int(total_hp_players * enemy_data["hp_multiplier"])
     
     battle_data = {
         "players": players,
@@ -156,16 +279,15 @@ async def start_battle(interaction, players, is_boss=False):
         "current_turn": 0,
         "game_over": False,
         "is_boss": is_boss,
+        "enemy_data": enemy_data,
         "start_time": datetime.now(),
         "channel_id": channel_id
     }
     bot.active_battles[channel_id] = battle_data
     
     channel = bot.get_channel(channel_id)
-    monster_type = "🔥 BOSS 🔥" if is_boss else "🐉 QUÁI DỮ 🐉"
-    await channel.send(f"⚔️ **TRẬN CHIẾN BẮT ĐẦU!** ⚔️\n{monster_type} có **{monster_hp} HP**!")
-    
-    await process_turn(channel_id)
+    monster_type = "🔥 BOSS 🔥" if is_boss else f"🐉 {enemy_data['name']} 🐉"
+    await channel.send(f"⚔️ **TRẬN CHIẾN BẮT ĐẦU!** ⚔️\n{monster_type} có **{monster_hp} HP**!\n⏱️ Thời gian mỗi lượt: {enemy_data['time_limit']} giây")
 
 async def process_turn(channel_id):
     battle = bot.active_battles.get(channel_id)
@@ -187,22 +309,16 @@ async def process_turn(channel_id):
     player = alive_players[current]
     battle["current_turn"] += 1
     
-    # Random ký tự hoặc số (boss khó hơn)
-    if battle["is_boss"]:
-        symbol = get_next_boss_symbol()
-        prompt = f"🔤 **Đến lượt {player['user'].mention}** – hãy nói chữ hoặc số: **{symbol}** trong 5 giây!"
-    else:
-        letter = get_next_letter()
-        symbol = letter
-        prompt = f"🔤 **Đến lượt {player['user'].mention}** – hãy nói chữ: **{letter}** trong 5 giây!"
+    symbol = get_next_symbol()
+    time_limit = battle["enemy_data"]["time_limit"]
     
-    await channel.send(f"{prompt}\n🐉 HP quái: {battle['monster_hp']}/{battle['monster_hp_max']} | 💚 HP bạn: {player['hp_current']}/{player['hp_max']}")
+    await channel.send(f"🔤 **Đến lượt {player['user'].mention}** – hãy nói chữ: **{symbol}** trong {time_limit} giây!\n🐉 HP quái: {battle['monster_hp']}/{battle['monster_hp_max']} | 💚 HP bạn: {player['hp_current']}/{player['hp_max']}")
     
     def check(m):
         return m.author.id == player["user"].id and m.content.strip().upper() == symbol and m.channel.id == channel_id
     
     try:
-        await bot.wait_for('message', timeout=5.0, check=check)
+        await bot.wait_for('message', timeout=time_limit, check=check)
         dmg = get_damage(player["user"].id)
         battle["monster_hp"] = max(0, battle["monster_hp"] - dmg)
         await channel.send(f"✅ {player['user'].mention} **đánh trúng!** Gây {dmg} sát thương. Quái còn {battle['monster_hp']} HP.")
@@ -228,20 +344,19 @@ async def end_battle(channel_id, win):
     channel = bot.get_channel(channel_id)
     alive_players = [p for p in battle["players"] if p["hp_current"] > 0]
     
-    # AI phán xét
-    funny = await get_funny_comment(win, monster_type="boss" if battle["is_boss"] else "normal")
+    funny = await get_funny_comment(win, monster_type="BOSS" if battle["is_boss"] else battle["enemy_data"]["name"])
     
     if win and alive_players:
         if battle["is_boss"]:
-            reward_total = random.randint(200, 500)
+            reward_total = random.randint(*battle["enemy_data"]["reward_range"])
             reward_total = format_reward(reward_total, len(alive_players))
             reward_each = reward_total // len(alive_players)
-            bonus_item = random.choice(["bình máu lớn", "bùa may mắn", "kiếm thép", None])
+            exp_reward = battle["enemy_data"]["exp_reward"]
         else:
-            reward_total = random.randint(60, 180)
+            reward_total = random.randint(*battle["enemy_data"]["reward_range"])
             reward_total = format_reward(reward_total, len(alive_players))
             reward_each = reward_total // len(alive_players)
-            bonus_item = None
+            exp_reward = battle["enemy_data"]["exp_reward"]
         
         msg = f"{funny}\n━━━━━━━━━━━━━━━━━━━━━\n🏆 **CHIẾN THẮNG!** 🏆\n"
         msg += f"🎁 **Phần thưởng:** {reward_total} xu (mỗi người {reward_each} xu)\n"
@@ -250,10 +365,10 @@ async def end_battle(channel_id, win):
             uid = str(p["user"].id)
             user_data[uid]["gold"] += reward_each
             user_data[uid]["total_wins"] += 1
-            user_data[uid]["exp"] += 30 if battle["is_boss"] else 20
+            user_data[uid]["exp"] += exp_reward
             user_data[uid]["total_hunts"] += 1
             
-            # Level up
+            # Level up & check map unlock
             exp_needed = 100 * user_data[uid]["level"]
             old_level = user_data[uid]["level"]
             while user_data[uid]["exp"] >= exp_needed:
@@ -263,21 +378,17 @@ async def end_battle(channel_id, win):
                 user_data[uid]["hp_current"] = user_data[uid]["hp_max"]
                 exp_needed = 100 * user_data[uid]["level"]
             
+            new_maps = check_map_unlock(uid)
+            
             if user_data[uid]["level"] > old_level:
                 msg += f"✨ {p['user'].mention}: **Lên level {user_data[uid]['level']}!** 💪\n"
+                if new_maps:
+                    msg += f"   🗺️ Mở khóa: {', '.join(new_maps)}\n"
             else:
-                msg += f"✅ {p['user'].mention}: +{reward_each} xu, +{30 if battle['is_boss'] else 20} exp\n"
-            
-            # Tặng item nếu trúng
-            if bonus_item and random.random() < 0.3:
-                if "inventory" not in user_data[uid]:
-                    user_data[uid]["inventory"] = {}
-                user_data[uid]["inventory"][bonus_item] = user_data[uid]["inventory"].get(bonus_item, 0) + 1
-                msg += f"🎁 {p['user'].mention} nhận thêm **{bonus_item}**!\n"
+                msg += f"✅ {p['user'].mention}: +{reward_each} xu, +{exp_reward} exp\n"
         
         save_db()
         await channel.send(msg)
-        
     else:
         msg = f"{funny}\n━━━━━━━━━━━━━━━━━━━━━\n💀 **THẤT BẠI!** 💀\nCả đội đã chết. Hãy dùng `/daily` kiếm xu mua đồ và thử lại."
         await channel.send(msg)
@@ -295,7 +406,6 @@ async def go_hunt(interaction: discord.Interaction, nguoi1: discord.User = None,
     for p in [nguoi1, nguoi2, nguoi3]:
         if p:
             players.append(p)
-    
     players = list(dict.fromkeys(players))
     
     # Check cooldown
@@ -364,13 +474,12 @@ async def boss_hunt(interaction: discord.Interaction, nguoi1: discord.User = Non
             players.append(p)
     players = list(dict.fromkeys(players))
     
-    # Check boss cooldown (2 phút)
+    # Check boss cooldown (3 phút)
     if interaction.channel_id in boss_cooldowns:
         remaining = int((boss_cooldowns[interaction.channel_id] - datetime.now()).seconds)
         if remaining > 0:
             return await interaction.followup.send(f"👾 BOSS đang hồi sinh! Còn {remaining} giây nữa mới xuất hiện lại.")
     
-    # Check cooldown & death
     for p in players:
         uid = str(p.id)
         init_user(uid)
@@ -408,8 +517,7 @@ async def boss_hunt(interaction: discord.Interaction, nguoi1: discord.User = Non
     if len(final_players) == 0:
         return await interaction.followup.send("❌ Không ai tham gia, boss bỏ đi...")
     
-    # Set cooldown (boss 2 phút, cá nhân 60s)
-    boss_cooldowns[interaction.channel_id] = datetime.now() + timedelta(seconds=120)
+    boss_cooldowns[interaction.channel_id] = datetime.now() + timedelta(seconds=180)  # 3 phút
     battle_players = []
     for p in final_players:
         uid = str(p.id)
@@ -423,7 +531,84 @@ async def boss_hunt(interaction: discord.Interaction, nguoi1: discord.User = Non
     
     await start_battle(interaction, battle_players, is_boss=True)
 
-# ==================== SHOP & ITEMS ====================
+@bot.tree.command(name='pass', description="🗺️ Xem và vượt ải mở khóa map mới")
+async def pass_map(interaction: discord.Interaction):
+    uid = str(interaction.user.id)
+    init_user(uid)
+    
+    current_map = user_data[uid].get("current_map", "beginner")
+    current_data = ENEMY_TYPES[current_map]
+    unlocked = user_data[uid]["unlocked_maps"]
+    
+    # Tìm map tiếp theo
+    map_order = ["beginner", "very_easy", "easy", "quite_normal", "normal", "quite_hard", "hard", "elite", "master"]
+    current_index = map_order.index(current_map) if current_map in map_order else 0
+    
+    msg = f"**🗺️ HỆ THỐNG VƯỢT ẢI**\n━━━━━━━━━━━━━━━━━━━━━\n"
+    msg += f"📍 **Map hiện tại:** {current_data['name']}\n"
+    msg += f"📊 **Level yêu cầu map tiếp theo:** {2 + current_index * 2}\n\n"
+    
+    if current_index + 1 < len(map_order):
+        next_map = map_order[current_index + 1]
+        next_data = ENEMY_TYPES[next_map]
+        req_level = 2 + current_index * 2
+        
+        if user_data[uid]["level"] >= req_level:
+            if next_map not in unlocked:
+                user_data[uid]["unlocked_maps"].append(next_map)
+                msg += f"✅ **ĐÃ MỞ KHÓA:** {next_data['name']}!\n"
+                msg += f"   Dùng `/change_map {next_map}` để chuyển sang map mới.\n"
+                save_db()
+            else:
+                msg += f"🔓 **Map đã mở khóa:** {next_data['name']}\n"
+                msg += f"   Dùng `/change_map {next_map}` để chuyển map.\n"
+        else:
+            msg += f"🔒 **Cần level {req_level} để mở {next_data['name']}**\n"
+    else:
+        msg += f"🏆 **Bạn đã đạt map cao nhất!** 🏆\n"
+    
+    # Hiển thị các map đã mở khóa
+    msg += f"\n**🗺️ Các map đã mở khóa:**\n"
+    for map_name in unlocked:
+        map_data = ENEMY_TYPES[map_name]
+        check = "✅" if map_name == current_map else "  "
+        msg += f"{check} {map_data['name']} (level {map_data['level_req']}+)\n"
+    
+    msg += f"\n💡 Dùng `/change_map [tên]` để đổi map săn!"
+    await interaction.response.send_message(msg)
+
+@bot.tree.command(name='change_map', description="🗺️ Đổi map săn quái")
+@app_commands.describe(map_name="Tên map: beginner, very_easy, easy, quite_normal, normal, quite_hard, hard, elite, master")
+async def change_map(interaction: discord.Interaction, map_name: str):
+    uid = str(interaction.user.id)
+    init_user(uid)
+    
+    map_name = map_name.lower()
+    if map_name not in ENEMY_TYPES:
+        return await interaction.response.send_message("❌ Tên map không hợp lệ! Các map: beginner, very_easy, easy, quite_normal, normal, quite_hard, hard, elite, master")
+    
+    if map_name not in user_data[uid]["unlocked_maps"]:
+        req_level = ENEMY_TYPES[map_name]["level_req"]
+        return await interaction.response.send_message(f"🔒 Bạn chưa mở khóa map này! Cần level {req_level} và dùng `/pass` để vượt ải.")
+    
+    user_data[uid]["current_map"] = map_name
+    save_db()
+    
+    map_data = ENEMY_TYPES[map_name]
+    await interaction.response.send_message(f"🗺️ Đã chuyển sang map **{map_data['name']}**!\n⏱️ Thời gian phản xạ: {map_data['time_limit']}s | 💰 Phần thưởng: {map_data['reward_range'][0]}-{map_data['reward_range'][1]} xu")
+
+@bot.tree.command(name='map_info', description="🗺️ Xem thông tin các map")
+async def map_info(interaction: discord.Interaction):
+    msg = f"**🗺️ THÔNG TIN CÁC MAP**\n━━━━━━━━━━━━━━━━━━━━━\n"
+    for key, data in ENEMY_TYPES.items():
+        msg += f"\n**{data['name']}**\n"
+        msg += f"   📊 Level yêu cầu: {data['level_req']}+\n"
+        msg += f"   ⏱️ Thời gian: {data['time_limit']}s\n"
+        msg += f"   💰 Xu: {data['reward_range'][0]}-{data['reward_range'][1]}\n"
+        msg += f"   ✨ Exp: {data['exp_reward']}\n"
+    msg += f"\n━━━━━━━━━━━━━━━━━━━━━\n💡 Dùng `/pass` để vượt ải mở khóa map mới!"
+    await interaction.response.send_message(msg)
+
 @bot.tree.command(name='shop', description="🛒 Xem cửa hàng")
 async def shop(interaction: discord.Interaction):
     uid = str(interaction.user.id)
@@ -433,7 +618,7 @@ async def shop(interaction: discord.Interaction):
     msg += f"💰 **Xu của bạn:** {user_data[uid]['gold']}\n\n"
     msg += f"**⚔️ VŨ KHÍ**\n• `kiếm sắt` - 150 xu (+25% dame)\n• `kiếm thép` - 300 xu (+50% dame)\n• `rìu chiến` - 500 xu (+80% dame)\n• `kiếm huyền thoại` - 1000 xu (+120% dame)\n\n"
     msg += f"**🛡️ GIÁP**\n• `áo da` - 120 xu (-25% dame nhận)\n• `áo giáp sắt` - 280 xu (-45% dame)\n• `áo thần` - 600 xu (-65% dame)\n\n"
-    msg += f"**💊 VẬT PHẨM**\n• `bình máu nhỏ` - 50 xu (hồi 30% HP)\n• `bình máu lớn` - 100 xu (hồi 60% HP)\n• `bình máu to` - 200 xu (hồi 100% HP)\n• `bùa may mắn` - 150 xu (+10% dame 1 trận)\n• `thẻ hồi sinh` - 300 xu (revive 1 lần)\n• `bùa nhân đôi` - 500 xu (x2 xu thưởng)\n\n"
+    msg += f"**💊 VẬT PHẨM**\n• `bình máu nhỏ` - 50 xu (hồi 30% HP)\n• `bình máu lớn` - 100 xu (hồi 60% HP)\n• `bình máu to` - 200 xu (hồi 100% HP)\n• `bùa may mắn` - 150 xu (+10% dame 1 trận)\n• `thẻ hồi sinh` - 300 xu (revive 1 lần)\n\n"
     msg += f"━━━━━━━━━━━━━━━━━━━━━\n💡 Dùng `/buy [tên]` để mua, `/use [tên]` để xài"
     await interaction.response.send_message(msg)
 
@@ -455,8 +640,7 @@ async def buy(interaction: discord.Interaction, item: str):
         "bình máu lớn": {"price": 100, "type": "consumable", "value": "bình máu lớn"},
         "bình máu to": {"price": 200, "type": "consumable", "value": "bình máu to"},
         "bùa may mắn": {"price": 150, "type": "consumable", "value": "bùa may mắn"},
-        "thẻ hồi sinh": {"price": 300, "type": "consumable", "value": "thẻ hồi sinh"},
-        "bùa nhân đôi": {"price": 500, "type": "consumable", "value": "bùa nhân đôi"}
+        "thẻ hồi sinh": {"price": 300, "type": "consumable", "value": "thẻ hồi sinh"}
     }
     
     item_lower = item.lower()
@@ -517,18 +701,12 @@ async def use_item(interaction: discord.Interaction, item: str):
         if user_data[uid]["hp_current"] == 0:
             user_data[uid]["hp_current"] = user_data[uid]["hp_max"] // 2
         msg = f"🔄 Dùng **thẻ hồi sinh**: hồi sinh với {user_data[uid]['hp_current']}/{user_data[uid]['hp_max']} HP!"
-    elif item_lower == "bùa nhân đôi":
-        if "active_buffs" not in user_data[uid]:
-            user_data[uid]["active_buffs"] = []
-        user_data[uid]["active_buffs"].append({"type": "double_reward", "remaining": 1, "name": "bùa nhân đôi"})
-        msg = f"✨ Dùng **bùa nhân đôi**: x2 xu thưởng sau trận!"
     else:
         msg = f"✅ Đã dùng **{item_lower}**!"
     
     save_db()
     await interaction.response.send_message(msg)
 
-# ==================== OTHER COMMANDS ====================
 @bot.tree.command(name='daily', description="🎁 Nhận 50 xu mỗi ngày")
 async def daily(interaction: discord.Interaction):
     uid = str(interaction.user.id)
@@ -551,6 +729,7 @@ async def inventory(interaction: discord.Interaction):
     uid = str(interaction.user.id)
     init_user(uid)
     d = user_data[uid]
+    current_map = ENEMY_TYPES.get(d.get("current_map", "beginner"), ENEMY_TYPES["beginner"])
     
     msg = f"**📦 TÚI ĐỒ CỦA {interaction.user.display_name}**\n━━━━━━━━━━━━━━━━━━━━━\n"
     msg += f"💰 **Xu:** {d['gold']}\n"
@@ -558,6 +737,7 @@ async def inventory(interaction: discord.Interaction):
     msg += f"🛡️ **Giáp:** {d['armor']}\n"
     msg += f"❤️ **HP:** {d['hp_current']}/{d['hp_max']}\n"
     msg += f"📊 **Level:** {d['level']} (exp: {d['exp']}/100)\n"
+    msg += f"🗺️ **Map hiện tại:** {current_map['name']}\n"
     
     if "inventory" in d and d["inventory"]:
         msg += f"\n💊 **Vật phẩm:**\n"
@@ -582,22 +762,23 @@ async def tutorial(interaction: discord.Interaction):
 **🎮 CÁCH CHƠI**
 1. `/go_hunt @bạn` (rủ thêm 1-3 bạn)
 2. Gõ `ok` trong 30s để tham gia
-3. Mỗi lượt bot yêu cầu gõ **chữ cái** (A-Z) trong 5s
+3. Mỗi lượt bot yêu cầu gõ **chữ cái** trong thời gian map quy định
    - ✅ Gõ đúng: đánh quái
    - ❌ Gõ sai/chậm: quái đánh bạn
-4. HP quái = 70% tổng HP cả đội
-5. Thắng -> chia đều xu + exp
+
+**🗺️ HỆ THỐNG MAP (9 cấp độ)**
+• Beginner (8s) → Very Easy (7.5s) → Easy (6s) → Quite Normal (5.5s)
+• Normal (5s) → Quite Hard (4.5s) → Hard (4s) → Elite (3s) → Master (2.75s)
+- Dùng `/pass` để vượt ải mở map mới
+- Dùng `/change_map` để đổi map săn
 
 **👾 SĂN BOSS**
-- `/boss` -> boss mạnh hơn (HP cao hơn, đánh đau hơn)
-- Yêu cầu cả chữ + số + ký tự (@#$%)
-- Phần thưởng cao hơn (200-500 xu + item)
-- BOSS respawn sau 2-5 phút
+- `/boss` -> boss mạnh hơn, respawn 3 phút
+- Phần thưởng cao hơn (200-500 xu)
 
 **🛒 SHOP & VẬT PHẨM**
 - `/shop` xem đồ, `/buy [tên]` mua
-- Vũ khí: tăng dame | Giáp: giảm sát thương nhận
-- Bình máu: hồi HP | Bùa: buff tạm thời
+- Vũ khí: tăng dame | Giáp: giảm sát thương
 
 **🎁 HÀNG NGÀY**
 - `/daily` nhận 50 xu/ngày
@@ -607,7 +788,6 @@ async def tutorial(interaction: discord.Interaction):
 💡 Mỗi lần săn xong chờ 10s để quái respawn!"""
     await interaction.response.send_message(msg)
 
-# ==================== BACKUP SYSTEM ====================
 @bot.tree.command(name='backup', description="💾 Lưu dữ liệu lên GitHub Gist")
 async def backup(interaction: discord.Interaction):
     if not GIST_TOKEN:
