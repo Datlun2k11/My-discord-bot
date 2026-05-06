@@ -2,4 +2,4 @@ discord.py
 aiohttp
 flask
 python-dotenv
-groq
+requests
