@@ -123,7 +123,7 @@ async def start_battle(interaction, players):
     embed.add_field(name="🐉 Quái vật", value=f"HP: {monster_hp}", inline=True)
     player_list = "\n".join([f"👤 {p['user'].mention} | HP: {p['hp']}/{p['hp_max']}" for p in players])
     embed.add_field(name="🗡️ Đội hình", value=player_list, inline=False)
-    embed.set_footer(text="Mỗi lượt bạn có 3s để gõ đúng chữ cái được yêu cầu!")
+    embed.set_footer(text="Mỗi lượt bạn có 5s để gõ đúng chữ cái được yêu cầu!")
     
     msg = await interaction.followup.send(embed=embed)
     battle_data["message"] = msg
@@ -153,7 +153,7 @@ async def process_turn(channel_id):
         return m.author.id == player["user"].id and m.content.strip().upper() == letter and m.channel.id == channel_id
     
     try:
-        await bot.wait_for('message', timeout=3.0, check=check)
+        await bot.wait_for('message', timeout=5.0, check=check)
         dmg = get_damage(player["user"].id)
         battle["monster_hp"] = max(0, battle["monster_hp"] - dmg)
         await channel.send(f"✅ {player['user'].mention} đánh trúng! **Gây {dmg} sát thương.** Quái còn {battle['monster_hp']} HP.")
@@ -315,19 +315,195 @@ async def tutorial(interaction: discord.Interaction):
     """
     await interaction.response.send_message(embed=discord.Embed(title="📘 HƯỚNG DẪN", description=desc, color=discord.Color.green()))
 
-@bot.tree.command(name='inv', description="📦 Xem túi đồ và trạng thái")
+@bot.tree.command(name='shop', description="🛒 Xem cửa hàng vật phẩm")
+async def shop(interaction: discord.Interaction):
+    uid = str(interaction.user.id)
+    init_user(uid)
+    
+    shop_text = """**🛒 CỬA HÀNG SĂN QUÁI 🛒**
+━━━━━━━━━━━━━━━━━━━━━
+
+**⚔️ VŨ KHÍ** (tăng sát thương)
+• `kiếm sắt` - 150 xu (+25% dame)
+• `kiếm thép` - 300 xu (+50% dame)
+• `rìu chiến` - 500 xu (+80% dame)
+• `kiếm huyền thoại` - 1000 xu (+120% dame)
+
+**🛡️ GIÁP** (giảm sát thương nhận)
+• `áo da` - 120 xu (giảm 25%)
+• `áo giáp sắt` - 280 xu (giảm 45%)
+• `áo thần` - 600 xu (giảm 65%)
+
+**💊 VẬT PHẨM** (/use [tên])
+• `bình máu nhỏ` - 50 xu (hồi 30% HP)
+• `bình máu lớn` - 100 xu (hồi 60% HP)
+• `bình máu to` - 200 xu (hồi 100% HP)
+• `bùa may mắn` - 150 xu (+10% dame 1 trận)
+• `thẻ hồi sinh` - 300 xu (revive 1 lần)
+• `bùa nhân đôi` - 500 xu (x2 xu thưởng)
+
+━━━━━━━━━━━━━━━━━━━━━
+💡 **Cách dùng:** `/buy [tên vật phẩm]`
+💰 **Xu của bạn:** `{user_data[uid]['gold']}`
+    """
+    
+    await interaction.response.send_message(shop_text)
+
+@bot.tree.command(name='buy', description="💰 Mua vật phẩm từ shop")
+@app_commands.describe(item="Tên vật phẩm muốn mua")
+async def buy(interaction: discord.Interaction, item: str):
+    uid = str(interaction.user.id)
+    init_user(uid)
+    
+    # Danh sách vật phẩm
+    items = {
+        # Vũ khí
+        "kiếm sắt": {"price": 150, "type": "weapon", "value": "kiếm sắt", "stat": 25},
+        "kiếm thép": {"price": 300, "type": "weapon", "value": "kiếm thép", "stat": 50},
+        "rìu chiến": {"price": 500, "type": "weapon", "value": "rìu chiến", "stat": 80},
+        "kiếm huyền thoại": {"price": 1000, "type": "weapon", "value": "kiếm huyền thoại", "stat": 120},
+        # Giáp
+        "áo da": {"price": 120, "type": "armor", "value": "áo da", "stat": 25},
+        "áo giáp sắt": {"price": 280, "type": "armor", "value": "áo giáp sắt", "stat": 45},
+        "áo thần": {"price": 600, "type": "armor", "value": "áo thần", "stat": 65},
+        # Vật phẩm (lưu vào inventory riêng)
+        "bình máu nhỏ": {"price": 50, "type": "consumable", "value": "bình máu nhỏ", "effect": "heal_30"},
+        "bình máu lớn": {"price": 100, "type": "consumable", "value": "bình máu lớn", "effect": "heal_60"},
+        "bình máu to": {"price": 200, "type": "consumable", "value": "bình máu to", "effect": "heal_100"},
+        "bùa may mắn": {"price": 150, "type": "consumable", "value": "bùa may mắn", "effect": "dame_buff"},
+        "thẻ hồi sinh": {"price": 300, "type": "consumable", "value": "thẻ hồi sinh", "effect": "revive"},
+        "bùa nhân đôi": {"price": 500, "type": "consumable", "value": "bùa nhân đôi", "effect": "double_reward"}
+    }
+    
+    item_lower = item.lower()
+    if item_lower not in items:
+        return await interaction.response.send_message("❌ Không có vật phẩm này! Dùng `/shop` để xem danh sách.")
+    
+    item_data = items[item_lower]
+    
+    if user_data[uid]["gold"] < item_data["price"]:
+        return await interaction.response.send_message(f"💸 Bạn nghèo quá! Cần {item_data['price']} xu nhưng bạn chỉ có {user_data[uid]['gold']} xu.")
+    
+    # Trừ tiền
+    user_data[uid]["gold"] -= item_data["price"]
+    
+    # Xử lý theo loại
+    if item_data["type"] == "weapon":
+        old = user_data[uid]["weapon"]
+        user_data[uid]["weapon"] = item_data["value"]
+        msg = f"⚔️ Đã mua **{item_data['value']}** (+{item_data['stat']}% dame)\nThay thế `{old}` → `{item_data['value']}`"
+    
+    elif item_data["type"] == "armor":
+        old = user_data[uid]["armor"]
+        user_data[uid]["armor"] = item_data["value"]
+        msg = f"🛡️ Đã mua **{item_data['value']}** (giảm {item_data['stat']}% sát thương)\nThay thế `{old}` → `{item_data['value']}`"
+    
+    else:  # consumable
+        if "inventory" not in user_data[uid]:
+            user_data[uid]["inventory"] = {}
+        
+        inv = user_data[uid]["inventory"]
+        inv[item_data["value"]] = inv.get(item_data["value"], 0) + 1
+        msg = f"💊 Đã mua **{item_data['value']}** x1\n📦 Hiện có: {inv.get(item_data['value'], 0)} cái"
+    
+    save_db()
+    
+    await interaction.response.send_message(f"✅ {msg}\n💰 Xu còn lại: {user_data[uid]['gold']}")
+
+@bot.tree.command(name='use', description="💊 Sử dụng vật phẩm tiêu hao")
+@app_commands.describe(item="Tên vật phẩm muốn dùng")
+async def use_item(interaction: discord.Interaction, item: str):
+    uid = str(interaction.user.id)
+    init_user(uid)
+    
+    if "inventory" not in user_data[uid]:
+        user_data[uid]["inventory"] = {}
+    
+    inv = user_data[uid]["inventory"]
+    item_lower = item.lower()
+    
+    # Danh sách vật phẩm dùng được
+    consumables = {
+        "bình máu nhỏ": {"heal": 0.3, "name": "bình máu nhỏ"},
+        "bình máu lớn": {"heal": 0.6, "name": "bình máu lớn"},
+        "bình máu to": {"heal": 1.0, "name": "bình máu to"},
+        "bùa may mắn": {"buff": "dame", "duration": 1, "name": "bùa may mắn"},
+        "thẻ hồi sinh": {"revive": True, "name": "thẻ hồi sinh"},
+        "bùa nhân đôi": {"buff": "reward", "duration": 1, "name": "bùa nhân đôi"}
+    }
+    
+    if item_lower not in consumables:
+        return await interaction.response.send_message("❌ Không thể dùng vật phẩm này! Xem `/shop` để biết vật phẩm khả dụng.")
+    
+    if inv.get(item_lower, 0) == 0:
+        return await interaction.response.send_message(f"❌ Bạn không có **{item_lower}** nào cả! Vào `/shop` mua đi.")
+    
+    # Trừ 1 item
+    inv[item_lower] -= 1
+    if inv[item_lower] == 0:
+        del inv[item_lower]
+    
+    item_data = consumables[item_lower]
+    
+    # Xử lý hiệu ứng
+    if "heal" in item_data:
+        hp_max = user_data[uid]["hp_max"]
+        hp_current = user_data[uid]["hp_current"]
+        heal_amount = int(hp_max * item_data["heal"])
+        new_hp = min(hp_max, hp_current + heal_amount)
+        user_data[uid]["hp_current"] = new_hp
+        msg = f"💚 Dùng **{item_data['name']}**: hồi {heal_amount} HP!\n❤️ HP hiện tại: {new_hp}/{hp_max}"
+    
+    elif "buff" in item_data:
+        if "active_buffs" not in user_data[uid]:
+            user_data[uid]["active_buffs"] = []
+        user_data[uid]["active_buffs"].append({
+            "type": item_data["buff"],
+            "remaining": item_data["duration"],
+            "name": item_data["name"]
+        })
+        msg = f"✨ Dùng **{item_data['name']}**: +10% dame trong {item_data['duration']} trận!"
+    
+    elif "revive" in item_data:
+        user_data[uid]["death_time"] = None
+        if user_data[uid]["hp_current"] == 0:
+            user_data[uid]["hp_current"] = user_data[uid]["hp_max"] // 2
+        msg = f"🔄 Dùng **{item_data['name']}**: hồi sinh với {user_data[uid]['hp_current']}/{user_data[uid]['hp_max']} HP!"
+    
+    save_db()
+    await interaction.response.send_message(msg)
+
+@bot.tree.command(name='inv', description="📦 Xem túi đồ và vật phẩm")
 async def inventory(interaction: discord.Interaction):
     uid = str(interaction.user.id)
     init_user(uid)
     d = user_data[uid]
-    embed = discord.Embed(title=f"📦 TÚI ĐỒ {interaction.user.display_name}", color=discord.Color.gold())
-    embed.add_field(name="💰 Xu", value=d["gold"], inline=True)
-    embed.add_field(name="⚔️ Vũ khí", value=d["weapon"], inline=True)
-    embed.add_field(name="🛡️ Giáp", value=d["armor"], inline=True)
-    embed.add_field(name="❤️ Máu", value=f"{d['hp_current']}/{d['hp_max']}", inline=True)
-    embed.add_field(name="📊 Level", value=d["level"], inline=True)
-    embed.add_field(name="✨ Exp", value=f"{d['exp']}/100", inline=True)
-    await interaction.response.send_message(embed=embed)
+    
+    # Trang bị hiện tại
+    msg = f"**📦 TÚI ĐỒ CỦA {interaction.user.display_name}**\n━━━━━━━━━━━━━━━━━━━━━\n"
+    msg += f"**💰 Xu:** {d['gold']}\n"
+    msg += f"**⚔️ Vũ khí:** {d['weapon']}\n"
+    msg += f"**🛡️ Giáp:** {d['armor']}\n"
+    msg += f"**❤️ HP:** {d['hp_current']}/{d['hp_max']}\n"
+    msg += f"**📊 Level:** {d['level']} (exp: {d['exp']}/100)\n"
+    
+    # Vật phẩm trong inventory
+    if "inventory" in d and d["inventory"]:
+        msg += f"\n**💊 Vật phẩm mang theo:**\n"
+        for item, count in d["inventory"].items():
+            msg += f"• {item}: {count} cái\n"
+    else:
+        msg += f"\n💊 **Vật phẩm:** Không có\n"
+    
+    # Buff đang active
+    if "active_buffs" in d and d["active_buffs"]:
+        msg += f"\n✨ **Buff đang có:**\n"
+        for buff in d["active_buffs"]:
+            msg += f"• {buff['name']} (còn {buff['remaining']} trận)\n"
+    
+    msg += f"\n━━━━━━━━━━━━━━━━━━━━━\n💡 Dùng `/use [tên]` để xài vật phẩm!"
+    
+    await interaction.response.send_message(msg)
 
 @bot.tree.command(name='level', description="📊 Xem thông tin cấp độ")
 async def level(interaction: discord.Interaction):
